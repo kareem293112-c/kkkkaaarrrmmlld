@@ -344,7 +344,7 @@ export default function App() {
         }
       }
 
-      const roomsRes = await fetch('/api/rooms');
+      const roomsRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/rooms`);
       if (roomsRes.ok) {
         const ct = roomsRes.headers.get('content-type');
         if (ct && ct.includes('application/json')) {
@@ -402,7 +402,7 @@ export default function App() {
 
   const handleCreateRoom = async (name: string) => {
       try {
-          const response = await fetch('/api/rooms', {
+          const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/rooms`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -425,7 +425,7 @@ export default function App() {
           
           if (data.success) {
               // 1. جلب الرومات المحدثة من السيرفر فوراً
-              const res = await fetch('/api/rooms');
+              const res = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/rooms`);
               if (res.ok) {
                   const updatedRooms = await res.json();
                   setRooms(updatedRooms);
@@ -449,7 +449,7 @@ export default function App() {
       let isCancelled = false;
 
       const refreshRooms = async () => {
-          const url = `${window.location.origin}/api/rooms`;
+          const url = `${import.meta.env.VITE_API_BASE_URL}/api/rooms`;
           console.log("Fetching", url);
           try {
               const res = await fetch(url, { cache: 'no-store' });
