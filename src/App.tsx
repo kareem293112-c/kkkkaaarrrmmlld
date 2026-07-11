@@ -2425,7 +2425,7 @@ export default function App() {
                                 <div className="flex items-center gap-3">
                                   <div className="relative">
                                     <img
-                                      src={room.hostAvatar}
+                                      src={room.hostAvatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                                       alt="host"
                                       className="w-11 h-11 rounded-lg object-cover border border-[#FFAE42]/20 shadow-sm"
                                     />
@@ -3928,7 +3928,7 @@ export default function App() {
                         >
                           <div className="relative">
                             <img
-                              src={activeRoom.hostAvatar}
+                              src={activeRoom.hostAvatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                               alt="host"
                               className="w-7 h-7 rounded-full border border-purple-500/30 object-cover select-none pointer-events-none"
                               style={{ WebkitTouchCallout: 'none' }}
@@ -4974,7 +4974,7 @@ export default function App() {
                               <span className="text-[10px] text-slate-400 font-bold">معاينة الصورة الحالية:</span>
                               <div className="relative w-24 h-24 rounded-2xl overflow-hidden border-2 border-amber-400/80 shadow-lg shadow-purple-950">
                                 <img
-                                  src={roomSettingsAvatar}
+                                  src={roomSettingsAvatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                                   alt="Room Avatar Preview"
                                   className="w-full h-full object-cover select-none pointer-events-none"
                                   style={{ WebkitTouchCallout: 'none' }}
