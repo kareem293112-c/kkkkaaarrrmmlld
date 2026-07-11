@@ -7,18 +7,19 @@ import agoraToken from 'agora-access-token';
 const { RtcTokenBuilder, RtcRole } = agoraToken as any;
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
-import { getDb, saveDb, initDb, DatabaseSchema } from "./server/db";
-import { AppUser, VoiceRoom, AgentTransferLog, VoiceSeat } from "./src/types";
+import { getDb, saveDb, initDb } from "./server/db";
+import { VoiceRoom, PrivateMessage } from "./src/types";
 import { initializeApp, getApps, applicationDefault } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
-import { getAuth } from "firebase-admin/auth";
 import { GoogleAuth } from "google-auth-library";
-import { createCipheriv } from "crypto";
 
-// Initialize database
+// Initialize local database
 initDb();
 
-// Initialize Firebase Admin SDK lazily with a startup connection/permission probe
+// Dynamic PORT assignment for Render or any platform
+const PORT = process.env.PORT || 3000;
+
+// Initialize Firebase Admin SDK lazily with fallback
 let firestoreDbInstance: any = null;
 let firebaseInitialized = false;
 let firestoreDisabled = false;
@@ -26,14 +27,11 @@ let firestoreDisabled = false;
 async function checkFirestoreAccess() {
   if (firestoreDisabled) return;
   try {
-    // 1. Verify Google Application Default Credentials (ADC) or credentials exist.
-    // If not, we fall back to local database instead of throwing an unhandled background exception in gRPC.
     try {
       const auth = new GoogleAuth();
       await auth.getApplicationDefault();
     } catch (credentialError: any) {
-      console.warn("⚠️ Google Application Default Credentials are not available:", credentialError.message || credentialError);
-      console.log("Switching to secure local JSON database storage.");
+      console.warn("⚠️ Google Application Default Credentials are not available. Local DB active.");
       firestoreDbInstance = null;
       firebaseInitialized = true;
       firestoreDisabled = true;
@@ -55,17 +53,13 @@ async function checkFirestoreAccess() {
     }
 
     const tempDb = getFirestore(app, customDbId);
-    
-    // Attempt a lightweight read operation to verify credentials and API status.
-    // If it succeeds, remote Firestore persistence is verified and active.
     await tempDb.collection("users").limit(1).get();
     
     firestoreDbInstance = tempDb;
     firebaseInitialized = true;
-    console.log("Firestore connection verified. App is operating in Cloud Database mode.");
+    console.log("Firestore connection verified. Operating in Cloud Database mode.");
   } catch (error: any) {
-    // Graceful fallback to local JSON storage without polluting console with stack traces
-    console.log("Firestore is offline or unauthorized. Switching to secure local JSON database storage.");
+    console.log("Firestore is offline or unauthorized. Operating in secure Local JSON storage mode.");
     firestoreDbInstance = null;
     firebaseInitialized = true;
     firestoreDisabled = true;
@@ -73,44 +67,32 @@ async function checkFirestoreAccess() {
 }
 
 function getFirestoreDb() {
-  if (firestoreDisabled) {
-    return null;
-  }
-  if (!firebaseInitialized) {
-    return null;
-  }
+  if (firestoreDisabled || !firebaseInitialized) return null;
   return firestoreDbInstance;
 }
 
 const app = express();
-const PORT = 3000;
 
-// إجبار السيرفر على قبول الطلبات من أي رابط خارجي لتشغيل الرومات للأصدقاء
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Enable JSON body parsing
 app.use(express.json());
 
-// Create HTTP Server
 const server = http.createServer(app);
-
-// Create WebSocket Server
 const wss = new WebSocketServer({ server });
 
-// Map to track connected room clients
-// Key: roomId, Value: Set of clients
 interface CustomWebSocket extends WebSocket {
   roomId?: string;
   userId?: string;
   userName?: string;
 }
+
 const roomClients = new Map<string, Set<CustomWebSocket>>();
 
-// Broadcast utility helper
+// Broadcast to room helper
 function broadcastToRoom(roomId: string, message: any, excludeClient?: CustomWebSocket) {
   const clients = roomClients.get(roomId);
   if (!clients) return;
@@ -122,7 +104,7 @@ function broadcastToRoom(roomId: string, message: any, excludeClient?: CustomWeb
   }
 }
 
-// Broadcast room users list to everyone in the room
+// Broadcast active room users list to everyone in that room
 function broadcastRoomUsers(roomId: string) {
   const clients = roomClients.get(roomId);
   if (!clients) return;
@@ -138,16 +120,14 @@ function broadcastRoomUsers(roomId: string) {
       });
     }
   }
-  // Remove duplicates by id
   const uniqueUsers = Array.from(new Map(activeUsers.map(item => [item.id, item])).values());
-
   broadcastToRoom(roomId, {
     type: "room_users_changed",
     users: uniqueUsers
   });
 }
 
-// Helper to safely get a user off the mic when they leave or disconnect
+// Helper to stand up when leaving or disconnecting
 async function handleUserStandUpFromSeat(roomId: string, userId: string) {
   if (!roomId || !userId) return;
   const db = getDb();
@@ -167,7 +147,6 @@ async function handleUserStandUpFromSeat(roomId: string, userId: string) {
       db.rooms[rIdx].seats = updatedSeats;
       saveDb(db);
 
-      // Persist to Firestore if available
       const fDb = getFirestoreDb();
       if (fDb) {
         try {
@@ -188,7 +167,6 @@ async function handleUserStandUpFromSeat(roomId: string, userId: string) {
         }
       }
 
-      // Broadcast seat update to everyone in the room
       broadcastToRoom(roomId, {
         type: "seats_changed",
         seats: updatedSeats
@@ -218,7 +196,6 @@ wss.on("connection", (ws: CustomWebSocket) => {
 
         console.log(`المستخدم ${userName} (${userId}) دخل الغرفة ${roomId}`);
 
-        // Notify others
         broadcastToRoom(roomId, {
           type: "system_message",
           text: `دخل ${userName} إلى المجلس`,
@@ -227,14 +204,12 @@ wss.on("connection", (ws: CustomWebSocket) => {
           timestamp: new Date().toISOString()
         }, ws);
 
-        // Send confirmation back
         ws.send(JSON.stringify({
           type: "join_success",
           roomId,
           message: "تم الاتصال بالغرفة بنجاح وبث الصوت وتزامن المقاعد نشط!"
         }));
 
-        // Broadcast room users
         broadcastRoomUsers(roomId);
       }
 
@@ -266,7 +241,6 @@ wss.on("connection", (ws: CustomWebSocket) => {
           saveDb(db);
         }
 
-        // Persist to Firestore if available
         const fDb = getFirestoreDb();
         if (fDb) {
           try {
@@ -287,7 +261,6 @@ wss.on("connection", (ws: CustomWebSocket) => {
           }
         }
         
-        // Broadcast seat update to everyone else in the room
         broadcastToRoom(roomId, {
           type: "seats_changed",
           seats
@@ -315,19 +288,16 @@ wss.on("connection", (ws: CustomWebSocket) => {
         const receiver = db.users.find(u => u.id === receiverId);
 
         if (sender && sender.coins >= gift.cost) {
-          // Deduct from sender
           sender.coins -= gift.cost;
           sender.xp += gift.xpReward;
-          sender.level = Math.floor(1 + Math.sqrt(sender.xp / 100)); // Dynamic level up
+          sender.level = Math.floor(1 + Math.sqrt(sender.xp / 100));
 
-          // Add to receiver if exists
           if (receiver) {
-            receiver.coins += gift.cost * 0.5; // Receive 50% commission
+            receiver.coins += gift.cost * 0.5;
             receiver.xp += gift.xpReward * 0.8;
             receiver.level = Math.floor(1 + Math.sqrt(receiver.xp / 100));
           }
 
-          // If gifting in active room, increase room level/xp
           const room = db.rooms.find(r => r.id === roomId);
           if (room) {
             room.xp += gift.xpReward;
@@ -336,7 +306,6 @@ wss.on("connection", (ws: CustomWebSocket) => {
 
           saveDb(db);
 
-          // Broadcast database updates to update client state
           broadcastToRoom(roomId, {
             type: "gift_received",
             gift,
@@ -377,14 +346,14 @@ wss.on("connection", (ws: CustomWebSocket) => {
   });
 });
 
-// ==================== API REST ENDPOINTS ====================
+// ==================== REST API ENDPOINTS ====================
 
-// Endpoint to fetch whole database (for auditing or checking tables)
+// Get whole DB for diagnosis
 app.get("/api/db", (req, res) => {
   res.json(getDb());
 });
 
-// Users REST API
+// Get users list
 app.get("/api/users", async (req, res) => {
   const fDb = getFirestoreDb();
   if (fDb) {
@@ -419,6 +388,7 @@ app.get("/api/users", async (req, res) => {
   res.json(getDb().users);
 });
 
+// Get user profile by ID
 app.get("/api/users/:id", async (req, res) => {
   const fDb = getFirestoreDb();
   if (fDb) {
@@ -457,6 +427,7 @@ app.get("/api/users/:id", async (req, res) => {
   }
 });
 
+// Create/Sync user state
 app.post("/api/users", async (req, res) => {
   const { id, name, avatar, level, coins, xp } = req.body;
   if (!id || !name) {
@@ -537,26 +508,22 @@ app.post("/api/users", async (req, res) => {
   res.json(user || localUser);
 });
 
-// مصفوفة ديناميكية مشتركة على السيرفر ليراها الجميع
+// Server-side active rooms array
 const globalRooms: VoiceRoom[] = [
     { id: "room_1", name: "مجلس صدى العرب الرئيسي", hostName: "System", hostAvatar: "", isPrivate: false, level: 1, xp: 0, activeUsersCount: 0, seats: [] }
 ];
 
-// مسار جلب الرومات المشتركة
+// Get shared voice rooms list
 app.get('/api/rooms', (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    console.log("[SERVER] Received request for /api/rooms");
-    console.log("[SERVER] Request query:", req.query);
-    console.log("[SERVER] Request params:", req.params);
     return res.json(globalRooms);
 });
 
-// مسار إنشاء روم جديدة وحفظها ديناميكياً
+// Create new room
 app.post('/api/rooms', async (req, res) => {
     const { roomName, owner_id, isPrivate, password, hostName, hostAvatar } = req.body;
     if (!roomName) return res.status(400).json({ error: 'اسم المجلس مطلوب' });
 
-    // التأكد من أن المستخدم ليس لديه غرفة نشطة بالفعل في الذاكرة
     if (owner_id) {
         const hasExisting = globalRooms.some(r => r.owner_id === owner_id);
         if (hasExisting) {
@@ -564,7 +531,7 @@ app.post('/api/rooms', async (req, res) => {
         }
     }
 
-    const newRoom = {
+    const newRoom: VoiceRoom = {
         id: `room_${Date.now()}`,
         name: roomName,
         hostName: hostName || 'مالك المجلس',
@@ -580,11 +547,9 @@ app.post('/api/rooms', async (req, res) => {
             userId: null,
             isLocked: false,
             isMuted: false
-        })),
-        messages: [] // مصفوفة لتخزين رسائل المجلس النصية بشكل مستقل
+        }))
     };
 
-    // إذا كانت قاعدة بيانات Firestore مفعلة، نحفظها هناك أيضاً لضمان التوافق الكامل
     const fDb = getFirestoreDb();
     if (fDb && owner_id) {
         try {
@@ -604,7 +569,6 @@ app.post('/api/rooms', async (req, res) => {
                 created_at: FieldValue.serverTimestamp()
             });
 
-            // إنشاء المقاعد في الفايرستور
             for (let i = 1; i <= 10; i++) {
                 await fDb.collection("voice_rooms").doc(newRoom.id).collection("mic_seats").doc(i.toString()).set({
                     seat_number: i,
@@ -623,62 +587,58 @@ app.post('/api/rooms', async (req, res) => {
     return res.json({ success: true, rooms: globalRooms });
 });
 
-app.get("/api/rooms/:id", async (req, res) => {
+// Update room info
+app.post("/api/rooms/update", async (req, res) => {
+  const { room_id, room_name, host_avatar } = req.body;
+  
+  const localDb = getDb();
+  const room = localDb.rooms.find(r => r.id === room_id);
+  if (room) {
+    room.name = room_name;
+    room.hostAvatar = host_avatar;
+    saveDb(localDb);
+  }
+
   const fDb = getFirestoreDb();
   if (fDb) {
     try {
-      const doc = await fDb.collection("voice_rooms").doc(req.params.id).get();
-      if (doc.exists) {
-        const d = doc.data()!;
-        const seatsSnap = await doc.ref.collection("mic_seats").get();
-        const seats = seatsSnap.docs.map(sDoc => {
-          const sData = sDoc.data();
-          return {
-            index: sData.seat_number,
-            userId: sData.current_user_id || null,
-            isMuted: sData.is_muted || false,
-            isLocked: sData.is_locked || false
-          };
-        }).sort((a, b) => a.index - b.index);
-
-        return res.json({
-          id: doc.id,
-          name: d.room_name || d.name,
-          hostName: d.host_name || d.hostName || "مالك المجلس",
-          hostAvatar: d.host_avatar || d.hostAvatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
-          isPrivate: d.is_private || d.isPrivate || false,
-          password: d.room_password || d.password || "",
-          level: d.level || 1,
-          xp: d.xp || 0,
-          activeUsersCount: d.activeUsersCount || seats.filter(s => s.userId).length || 1,
-          seats: seats,
-          owner_id: d.owner_id || null
-        });
-      }
-    } catch (e) {
-      console.warn("Firestore fetch single room error, fallback to local:", e);
+      const roomRef = fDb.collection("voice_rooms").doc(room_id);
+      await roomRef.update({
+        room_name: room_name,
+        host_avatar: host_avatar,
+        hostAvatar: host_avatar,
+      });
+    } catch (error) {
+      console.error("Firestore error updating room settings:", error);
     }
   }
 
-  const room = getDb().rooms.find(r => r.id === req.params.id);
-  if (room) {
-    res.json(room);
-  } else {
-    res.status(404).json({ error: "المجلس غير موجود" });
-  }
+  wss.clients.forEach((client: any) => {
+    if (client.readyState === WebSocket.OPEN && client.roomId === room_id) {
+      client.send(JSON.stringify({
+        type: "room_details_changed",
+        roomId: room_id,
+        name: room_name,
+        hostAvatar: host_avatar
+      }));
+    }
+  });
+
+  res.json({ success: true });
 });
 
-// Transactions & Agent Balance API
+// Get transfer logs
 app.get("/api/transactions", (req, res) => {
   res.json(getDb().transactions);
 });
 
+// Get agent balance
 app.get("/api/agent/balance", (req, res) => {
   const agent = getDb().users.find(u => u.id === "1004" || u.role === "agent");
   res.json({ balance: agent ? agent.coins : 250000 });
 });
 
-// GET /api/agents/hub - Get list of active agents
+// Get active agents list
 app.get("/api/agents/hub", async (req, res) => {
   const fDb = getFirestoreDb();
   if (fDb) {
@@ -690,38 +650,15 @@ app.get("/api/agents/hub", async (req, res) => {
           agents.push({ id: doc.id, ...doc.data() });
         });
         return res.json(agents);
-      } else {
-        // Populate Firestore with default agents if empty
-        const defaultAgents = [
-          {
-            agent_id: "1004",
-            agent_name: "خالد الحربي (الوكيل المعتمد)",
-            contact_whatsapp: "https://wa.me/966500000000",
-            is_active: true
-          },
-          {
-            agent_id: "1001",
-            agent_name: "أحمد العتيبي (الوكيل الذهبي)",
-            contact_whatsapp: "https://wa.me/966511111111",
-            is_active: true
-          }
-        ];
-        for (const ag of defaultAgents) {
-          await fDb.collection("agents_hub").doc(ag.agent_id).set(ag);
-        }
-        return res.json(defaultAgents);
       }
     } catch (e) {
       console.warn("Error fetching agents_hub from Firestore, falling back:", e);
     }
   }
-
-  // Fallback to local DB
-  const db = getDb();
-  res.json(db.agentsHub || []);
+  res.json(getDb().agentsHub || []);
 });
 
-// POST /api/agents/transfer - Secure Agent to User Transfer API
+// Secure Agent to User Transfer API
 app.post("/api/agents/transfer", async (req, res) => {
   const { agent_id, receiver_id, coins_amount } = req.body;
   const transferAmount = Number(coins_amount);
@@ -743,9 +680,7 @@ app.post("/api/agents/transfer", async (req, res) => {
         const agentDoc = await transaction.get(agentRef);
         const receiverDoc = await transaction.get(receiverRef);
 
-        if (!agentDoc.exists) {
-          throw new Error("حساب الوكيل غير موجود في صدى العرب");
-        }
+        if (!agentDoc.exists) throw new Error("حساب الوكيل غير موجود في صدى العرب");
 
         const agentData = agentDoc.data();
         agentName = agentData.username || agentData.name || "وكيل شحن";
@@ -755,11 +690,9 @@ app.post("/api/agents/transfer", async (req, res) => {
         if (agentRole !== "agent" && agentRole !== "admin") {
           throw new Error("المستخدم ليس لديه صلاحية وكيل شحن معتمد");
         }
-
         if (agentBalance < transferAmount) {
           throw new Error("رصيد الوكيل غير كافي لإتمام هذه العملية");
         }
-
         if (!receiverDoc.exists) {
           throw new Error("معرف حساب العميل المستهدف غير موجود");
         }
@@ -768,20 +701,17 @@ app.post("/api/agents/transfer", async (req, res) => {
         receiverName = receiverData.username || receiverData.name || "عميل";
         const receiverBalance = receiverData.coins_balance !== undefined ? receiverData.coins_balance : (receiverData.coins || 0);
 
-        // Perform atomic balance updates
         transaction.update(agentRef, {
           coins_balance: agentBalance - transferAmount,
           coins: agentBalance - transferAmount
         });
-
         transaction.update(receiverRef, {
           coins_balance: receiverBalance + transferAmount,
           coins: receiverBalance + transferAmount
         });
 
-        // Log the transaction in Firestore agent_transfer_logs
         const logRef = fDb.collection("agent_transfer_logs").doc();
-        const logData = {
+        transaction.set(logRef, {
           id: logRef.id,
           agent_id,
           agent_name: agentName,
@@ -789,8 +719,7 @@ app.post("/api/agents/transfer", async (req, res) => {
           receiver_name: receiverName,
           coins_amount: transferAmount,
           timestamp: FieldValue.serverTimestamp()
-        };
-        transaction.set(logRef, logData);
+        });
 
         return {
           agentBalance: agentBalance - transferAmount,
@@ -800,17 +729,12 @@ app.post("/api/agents/transfer", async (req, res) => {
         };
       });
 
-      // Synchronize back to Local DB
       const localDb = getDb();
       const localAgent = localDb.users.find(u => u.id === agent_id);
       const localReceiver = localDb.users.find(u => u.id === receiver_id);
 
-      if (localAgent) {
-        localAgent.coins = result.agentBalance;
-      }
-      if (localReceiver) {
-        localReceiver.coins = result.receiverBalance;
-      }
+      if (localAgent) localAgent.coins = result.agentBalance;
+      if (localReceiver) localReceiver.coins = result.receiverBalance;
 
       const localLog = {
         id: `atl_${Date.now()}`,
@@ -822,12 +746,9 @@ app.post("/api/agents/transfer", async (req, res) => {
         timestamp: new Date().toISOString()
       };
 
-      if (!localDb.agentTransferLogs) {
-        localDb.agentTransferLogs = [];
-      }
+      if (!localDb.agentTransferLogs) localDb.agentTransferLogs = [];
       localDb.agentTransferLogs.unshift(localLog);
 
-      // Keep default transaction list synced too
       localDb.transactions.unshift({
         id: localLog.id,
         senderId: agent_id,
@@ -840,7 +761,6 @@ app.post("/api/agents/transfer", async (req, res) => {
 
       saveDb(localDb);
 
-      // Broadcast changes via Websockets
       const broadcastMsg = {
         type: "agent_transfer_update",
         agentId: agent_id,
@@ -850,8 +770,6 @@ app.post("/api/agents/transfer", async (req, res) => {
         log: localLog
       };
       broadcastToRoom("room_1", broadcastMsg);
-      broadcastToRoom("room_2", broadcastMsg);
-      broadcastToRoom("room_3", broadcastMsg);
 
       return res.json({
         success: true,
@@ -866,27 +784,21 @@ app.post("/api/agents/transfer", async (req, res) => {
     }
   }
 
-  // Fallback to purely local database if Firebase is unavailable
+  // Fallback purely local
   const localDb = getDb();
   const localAgent = localDb.users.find(u => u.id === agent_id);
   const localReceiver = localDb.users.find(u => u.id === receiver_id);
 
-  if (!localAgent) {
-    return res.status(404).json({ error: "حساب الوكيل غير موجود محلياً" });
-  }
+  if (!localAgent) return res.status(404).json({ error: "حساب الوكيل غير موجود محلياً" });
 
   const agentRole = localAgent.role || "user";
   if (agentRole !== "agent" && agentRole !== "admin") {
     return res.status(403).json({ error: "المستخدم ليس لديه صلاحية وكيل شحن معتمد" });
   }
-
   if (localAgent.coins < transferAmount) {
     return res.status(400).json({ error: "رصيد الوكيل غير كافي لإتمام هذه العملية" });
   }
-
-  if (!localReceiver) {
-    return res.status(404).json({ error: "معرف حساب العميل غير موجود في صدى العرب" });
-  }
+  if (!localReceiver) return res.status(404).json({ error: "معرف حساب العميل غير موجود" });
 
   localAgent.coins -= transferAmount;
   localReceiver.coins += transferAmount;
@@ -901,9 +813,7 @@ app.post("/api/agents/transfer", async (req, res) => {
     timestamp: new Date().toISOString()
   };
 
-  if (!localDb.agentTransferLogs) {
-    localDb.agentTransferLogs = [];
-  }
+  if (!localDb.agentTransferLogs) localDb.agentTransferLogs = [];
   localDb.agentTransferLogs.unshift(localLog);
 
   localDb.transactions.unshift({
@@ -927,8 +837,6 @@ app.post("/api/agents/transfer", async (req, res) => {
     log: localLog
   };
   broadcastToRoom("room_1", broadcastMsg);
-  broadcastToRoom("room_2", broadcastMsg);
-  broadcastToRoom("room_3", broadcastMsg);
 
   return res.json({
     success: true,
@@ -938,525 +846,7 @@ app.post("/api/agents/transfer", async (req, res) => {
   });
 });
 
-// Legacy backward-compatible redirect
-app.post("/api/agent/transfer", async (req, res) => {
-  const { targetUserId, amount } = req.body;
-  // Redirect to new agent transfer handler with Khalid Alharbi (1004) as the agent
-  req.body.agent_id = "1004";
-  req.body.receiver_id = targetUserId;
-  req.body.coins_amount = amount;
-  
-  // Directly forward the request internally or process it similarly
-  const localDb = getDb();
-  const localAgent = localDb.users.find(u => u.id === "1004");
-  const localReceiver = localDb.users.find(u => u.id === targetUserId);
-
-  if (!localAgent || !localReceiver) {
-    return res.status(400).json({ error: "فشل التحويل: حسابات غير صالحة" });
-  }
-
-  localAgent.coins = Math.max(0, localAgent.coins - Number(amount));
-  localReceiver.coins += Number(amount);
-  saveDb(localDb);
-
-  return res.json({
-    success: true,
-    message: "تم شحن الكوينزات بنجاح!",
-    agentBalance: localAgent.coins,
-    targetUser: localReceiver
-  });
-});
-
-// ==================== NEW VOICE ROOM API ENDPOINTS ====================
-app.post("/api/rooms/create", async (req, res) => {
-  const { room_name, owner_id, is_private, password, host_name, host_avatar } = req.body;
-  
-  // Guard against undefined values to prevent Firestore and local DB validation failures
-  const sanitizedRoomName = room_name ? String(room_name).trim() : "مجلس صوتي جديد";
-  const sanitizedOwnerId = owner_id ? String(owner_id) : "";
-  const sanitizedHostName = host_name ? String(host_name).trim() : "مالك المجلس";
-  const sanitizedHostAvatar = host_avatar ? String(host_avatar) : "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120";
-  const sanitizedPassword = password ? String(password).trim() : "";
-
-  let lastErrorMsg = "";
-
-  const fDb = getFirestoreDb();
-  if (fDb) {
-    try {
-      const existingRoom = await fDb.collection("voice_rooms").where("owner_id", "==", sanitizedOwnerId).get();
-      if (!existingRoom.empty) {
-        return res.status(400).json({ error: "User already has a room" });
-      }
-
-      const roomRef = await fDb.collection("voice_rooms").add({
-        room_name: sanitizedRoomName,
-        owner_id: sanitizedOwnerId,
-        is_private: !!is_private,
-        room_password: sanitizedPassword,
-        max_seats: 8,
-        host_name: sanitizedHostName,
-        host_avatar: sanitizedHostAvatar,
-        hostName: sanitizedHostName,
-        hostAvatar: sanitizedHostAvatar,
-        created_at: FieldValue.serverTimestamp()
-      });
-      
-      // Create seats
-      for (let i = 1; i <= 8; i++) {
-        await roomRef.collection("mic_seats").doc(i.toString()).set({
-          seat_number: i,
-          current_user_id: null,
-          is_locked: false,
-          is_muted: false
-        });
-      }
-      
-      console.log(`Firestore successfully created voice room: ${roomRef.id}`);
-      return res.json({ room_id: roomRef.id });
-    } catch (error: any) {
-      console.error("Firestore error creating room:", error);
-      lastErrorMsg = error?.message || String(error);
-    }
-  }
-
-  // Fallback to local DB
-  try {
-    const localDb = getDb();
-    const newRoomId = "room_" + (localDb.rooms.length + 1);
-    const seats = Array.from({ length: 8 }, (_, i) => ({
-      index: i + 1, // 1 to 8
-      userId: null,
-      isMuted: false,
-      isLocked: false
-    }));
-    
-    const newRoom: any = {
-      id: newRoomId,
-      name: sanitizedRoomName,
-      hostName: sanitizedHostName,
-      hostAvatar: sanitizedHostAvatar,
-      isPrivate: !!is_private,
-      password: sanitizedPassword,
-      level: 1,
-      xp: 0,
-      activeUsersCount: 1,
-      seats: seats,
-      owner_id: sanitizedOwnerId
-    };
-    
-    localDb.rooms.push(newRoom);
-    saveDb(localDb);
-    console.log(`Fallback local JSON successfully created voice room: ${newRoomId}`);
-    return res.json({ room_id: newRoomId });
-  } catch (localError: any) {
-    console.error("Fallback local database write failed:", localError);
-    const combinedError = lastErrorMsg 
-      ? `Firestore Error: ${lastErrorMsg}. Local DB Error: ${localError?.message || localError}`
-      : `Local DB Error: ${localError?.message || localError}`;
-    return res.status(500).json({ 
-      success: false, 
-      error: `فشل إنشاء الروم في قواعد البيانات السحابية والمحلية: ${combinedError}` 
-    });
-  }
-});
-
-app.post("/api/rooms/update", async (req, res) => {
-  const { room_id, room_name, host_avatar } = req.body;
-  
-  // 1. Sync to local DB
-  const localDb = getDb();
-  const room = localDb.rooms.find(r => r.id === room_id);
-  if (room) {
-    room.name = room_name;
-    room.hostAvatar = host_avatar;
-    saveDb(localDb);
-  }
-
-  // 2. Sync to Firestore (if active)
-  const fDb = getFirestoreDb();
-  if (fDb) {
-    try {
-      const roomRef = fDb.collection("voice_rooms").doc(room_id);
-      await roomRef.update({
-        room_name: room_name,
-        host_avatar: host_avatar,
-        hostAvatar: host_avatar, // Keep both updated
-      });
-    } catch (error) {
-      console.error("Firestore error updating room settings:", error);
-    }
-  }
-
-  // 3. Broadcast real-time change to all connected WebSocket clients in the room
-  if (wss) {
-    wss.clients.forEach((client: any) => {
-      if (client.readyState === WebSocket.OPEN && client.roomId === room_id) {
-        client.send(JSON.stringify({
-          type: "room_details_changed",
-          roomId: room_id,
-          name: room_name,
-          hostAvatar: host_avatar
-        }));
-      }
-    });
-  }
-
-  res.json({ success: true });
-});
-
-app.post("/api/rooms/seats/take", async (req, res) => {
-    const { room_id, seat_number, user_id } = req.body;
-    const fDb = getFirestoreDb();
-    if (fDb) {
-      try {
-        const seatRef = fDb.collection("voice_rooms").doc(room_id).collection("mic_seats").doc(seat_number.toString());
-        const seatDoc = await seatRef.get();
-        if (!seatDoc.exists) return res.status(404).json({ error: "Seat not found" });
-        if (seatDoc.data()?.is_locked) return res.status(403).json({ error: "Seat is locked" });
-        
-        await seatRef.update({ current_user_id: user_id });
-        return res.json({ success: true });
-      } catch (error) {
-        console.error("Firestore error taking seat:", error);
-      }
-    }
-
-    // Fallback to local DB
-    const localDb = getDb();
-    const room = localDb.rooms.find(r => r.id === room_id);
-    if (!room) return res.status(404).json({ error: "Room not found" });
-    const seat = room.seats.find((s: any) => s.index === Number(seat_number));
-    if (!seat) return res.status(404).json({ error: "Seat not found" });
-    if (seat.isLocked) return res.status(403).json({ error: "Seat is locked" });
-
-    seat.userId = user_id;
-    saveDb(localDb);
-    res.json({ success: true });
-});
-
-app.post("/api/rooms/seats/leave", async (req, res) => {
-    const { room_id, seat_number } = req.body;
-    const fDb = getFirestoreDb();
-    if (fDb) {
-      try {
-        await fDb.collection("voice_rooms").doc(room_id).collection("mic_seats").doc(seat_number.toString()).update({ current_user_id: null });
-        return res.json({ success: true });
-      } catch (error) {
-        console.error("Firestore error leaving seat:", error);
-      }
-    }
-
-    // Fallback to local DB
-    const localDb = getDb();
-    const room = localDb.rooms.find(r => r.id === room_id);
-    if (!room) return res.status(404).json({ error: "Room not found" });
-    const seat = room.seats.find((s: any) => s.index === Number(seat_number));
-    if (!seat) return res.status(404).json({ error: "Seat not found" });
-
-    seat.userId = null;
-    saveDb(localDb);
-    res.json({ success: true });
-});
-
-app.post("/api/rooms/seats/lock", async (req, res) => {
-    const { room_id, seat_number, is_locked } = req.body;
-    const fDb = getFirestoreDb();
-    if (fDb) {
-      try {
-        await fDb.collection("voice_rooms").doc(room_id).collection("mic_seats").doc(seat_number.toString()).update({ is_locked });
-        return res.json({ success: true });
-      } catch (error) {
-        console.error("Firestore error locking seat:", error);
-      }
-    }
-
-    // Fallback to local DB
-    const localDb = getDb();
-    const room = localDb.rooms.find(r => r.id === room_id);
-    if (!room) return res.status(404).json({ error: "Room not found" });
-    const seat = room.seats.find((s: any) => s.index === Number(seat_number));
-    if (!seat) return res.status(404).json({ error: "Seat not found" });
-
-    seat.isLocked = is_locked;
-    saveDb(localDb);
-    res.json({ success: true });
-});
-
-app.post("/api/rooms/seats/mute", async (req, res) => {
-    const { room_id, seat_number, is_muted } = req.body;
-    const fDb = getFirestoreDb();
-    if (fDb) {
-      try {
-        await fDb.collection("voice_rooms").doc(room_id).collection("mic_seats").doc(seat_number.toString()).update({ is_muted });
-        return res.json({ success: true });
-      } catch (error) {
-        console.error("Firestore error muting seat:", error);
-      }
-    }
-
-    // Fallback to local DB
-    const localDb = getDb();
-    const room = localDb.rooms.find(r => r.id === room_id);
-    if (!room) return res.status(404).json({ error: "Room not found" });
-    const seat = room.seats.find((s: any) => s.index === Number(seat_number));
-    if (!seat) return res.status(404).json({ error: "Seat not found" });
-
-    seat.isMuted = is_muted;
-    saveDb(localDb);
-    res.json({ success: true });
-});
-
-// Predefined fallback gifts for the system
-const DEFAULT_GIFTS: { [key: string]: { gift_name: string; coin_price: number; animation_url: string } } = {
-  rose: { gift_name: "وردة", coin_price: 1, animation_url: "rose" },
-  car: { gift_name: "سيارة فاخرة", coin_price: 1000, animation_url: "car" },
-  lion: { gift_name: "أسد مهيب", coin_price: 5000, animation_url: "lion" },
-  yacht: { gift_name: "يخت ملكي", coin_price: 10000, animation_url: "yacht" },
-  castle: { gift_name: "قصر الأساطير", coin_price: 20000, animation_url: "castle" }
-};
-
-function calculateVipLevel(xp: number): number {
-  if (xp >= 200000) return 7;
-  if (xp >= 50000) return 6;
-  if (xp >= 10000) return 5;
-  if (xp >= 2000) return 4;
-  if (xp >= 500) return 3;
-  if (xp >= 100) return 2;
-  return 1;
-}
-
-// Virtual Gifting and Balance Transfer API with Firestore transactions, gamification, and safety fallbacks
-app.post("/api/gifts/send", async (req, res) => {
-  const { room_id, sender_id, receiver_id, gift_id } = req.body;
-  if (!sender_id || !gift_id) {
-    return res.status(400).json({ error: "Sender and Gift ID are required" });
-  }
-
-  let gift = DEFAULT_GIFTS[gift_id];
-  if (!gift) {
-    gift = { gift_name: gift_id, coin_price: 10, animation_url: gift_id };
-  }
-
-  const fDb = getFirestoreDb();
-  if (fDb) {
-    try {
-      const giftDoc = await fDb.collection("gifts").doc(gift_id).get();
-      if (giftDoc.exists) {
-        const d = giftDoc.data();
-        gift = {
-          gift_name: d.gift_name || gift.gift_name,
-          coin_price: d.coin_price !== undefined ? d.coin_price : gift.coin_price,
-          animation_url: d.animation_url || gift.animation_url
-        };
-      }
-    } catch (e) {
-      console.warn("Could not fetch gift from Firestore, using default:", e);
-    }
-
-    try {
-      const senderRef = fDb.collection("users").doc(sender_id);
-      const receiverRef = receiver_id ? fDb.collection("users").doc(receiver_id) : null;
-
-      const result = await fDb.runTransaction(async (transaction: any) => {
-        const senderDoc = await transaction.get(senderRef);
-        let senderBalance = 0;
-        let currentSenderXp = 0;
-        let currentSenderBadges: string[] = [];
-        let senderClanId: string | null = null;
-
-        if (!senderDoc.exists) {
-          // Auto-provision user if they do not exist
-          transaction.set(senderRef, {
-            user_id: sender_id,
-            username: "User_" + sender_id,
-            coins_balance: 10000, // Initial balance for smooth demo
-            vip_level: 1,
-            sender_xp: 0,
-            charm_xp: 0,
-            badges: [],
-            created_at: FieldValue.serverTimestamp()
-          });
-          senderBalance = 10000;
-          currentSenderXp = 0;
-          currentSenderBadges = [];
-        } else {
-          const sData = senderDoc.data();
-          senderBalance = sData.coins_balance || 0;
-          currentSenderXp = sData.sender_xp || 0;
-          currentSenderBadges = sData.badges || [];
-          senderClanId = sData.clan_id || null;
-        }
-
-        if (senderBalance < gift.coin_price) {
-          throw new Error("Insufficient Balance");
-        }
-
-        const newSenderBalance = senderBalance - gift.coin_price;
-        const newSenderXp = currentSenderXp + gift.coin_price;
-        const newVipLevel = calculateVipLevel(newSenderXp);
-
-        // Check Diamond Supporter badge (50k XP)
-        const updatedSenderBadges = [...currentSenderBadges];
-        if (newSenderXp >= 50000 && !updatedSenderBadges.includes("diamond_supporter")) {
-          updatedSenderBadges.push("diamond_supporter");
-        }
-
-        transaction.update(senderRef, { 
-          coins_balance: newSenderBalance,
-          sender_xp: newSenderXp,
-          vip_level: newVipLevel,
-          badges: updatedSenderBadges
-        });
-
-        // Handle receiver charm XP and VIP Level (or just charm_xp)
-        if (receiverRef) {
-          const receiverDoc = await transaction.get(receiverRef);
-          let currentReceiverXp = 0;
-          let currentReceiverBadges: string[] = [];
-          let receiverBalance = 0;
-
-          if (receiverDoc.exists) {
-            const rData = receiverDoc.data();
-            receiverBalance = rData.coins_balance || 0;
-            currentReceiverXp = rData.charm_xp || 0;
-            currentReceiverBadges = rData.badges || [];
-            
-            const newReceiverXp = currentReceiverXp + gift.coin_price;
-            const updatedReceiverBadges = [...currentReceiverBadges];
-            if (newReceiverXp >= 10000 && !updatedReceiverBadges.includes("elite_host")) {
-              updatedReceiverBadges.push("elite_host");
-            }
-
-            transaction.update(receiverRef, { 
-              coins_balance: receiverBalance + gift.coin_price,
-              charm_xp: newReceiverXp,
-              badges: updatedReceiverBadges
-            });
-          } else {
-            const updatedReceiverBadges = [];
-            if (gift.coin_price >= 10000) {
-              updatedReceiverBadges.push("elite_host");
-            }
-            transaction.set(receiverRef, {
-              user_id: receiver_id,
-              username: "User_" + receiver_id,
-              coins_balance: gift.coin_price,
-              vip_level: 1,
-              sender_xp: 0,
-              charm_xp: gift.coin_price,
-              badges: updatedReceiverBadges,
-              created_at: FieldValue.serverTimestamp()
-            });
-          }
-        }
-
-        // Handle Clan total_xp increase
-        if (senderClanId) {
-          const clanRef = fDb.collection("clans").doc(senderClanId);
-          const clanDoc = await transaction.get(clanRef);
-          if (clanDoc.exists) {
-            const currentClanXp = clanDoc.data().total_xp || 0;
-            transaction.update(clanRef, { total_xp: currentClanXp + gift.coin_price });
-          }
-        }
-
-        // Log the event
-        const logRef = fDb.collection("gift_logs").doc();
-        transaction.set(logRef, {
-          room_id: room_id || "global",
-          sender_id,
-          receiver_id: receiver_id || null,
-          gift_id,
-          gift_name: gift.gift_name,
-          coin_price: gift.coin_price,
-          timestamp: FieldValue.serverTimestamp()
-        });
-
-        return { senderBalance: newSenderBalance, newSenderXp, newVipLevel, updatedSenderBadges };
-      });
-
-      return res.json({
-        success: true,
-        message: "تم إرسال الهدية بنجاح",
-        sender_balance: result.senderBalance,
-        sender_xp: result.newSenderXp,
-        vip_level: result.newVipLevel,
-        badges: result.updatedSenderBadges,
-        gift
-      });
-    } catch (error: any) {
-      console.error("Firestore transaction failed for sending gift:", error);
-      if (error.message === "Insufficient Balance") {
-        return res.status(400).json({ error: "Insufficient Balance" });
-      }
-    }
-  }
-
-  // Fallback to Local DB
-  const localDb = getDb();
-  const sender = localDb.users.find(u => u.id === sender_id);
-  if (!sender) {
-    return res.status(404).json({ error: "المرسل غير موجود" });
-  }
-
-  if (sender.coins < gift.coin_price) {
-    return res.status(400).json({ error: "Insufficient Balance" });
-  }
-
-  sender.coins -= gift.coin_price;
-  sender.senderXp = (sender.senderXp || 0) + gift.coin_price;
-  sender.vipLevel = calculateVipLevel(sender.senderXp);
-
-  if (!sender.badges) sender.badges = [];
-  if (sender.senderXp >= 50000 && !sender.badges.includes("diamond_supporter")) {
-    sender.badges.push("diamond_supporter");
-  }
-
-  if (receiver_id) {
-    const receiver = localDb.users.find(u => u.id === receiver_id);
-    if (receiver) {
-      receiver.coins += gift.coin_price;
-      receiver.charmXp = (receiver.charmXp || 0) + gift.coin_price;
-      if (!receiver.badges) receiver.badges = [];
-      if (receiver.charmXp >= 10000 && !receiver.badges.includes("elite_host")) {
-        receiver.badges.push("elite_host");
-      }
-    }
-  }
-
-  // Handle local Clan XP
-  if (sender.clanId) {
-    const clan = (localDb.clans || []).find((c: any) => c.clanId === sender.clanId);
-    if (clan) {
-      clan.totalXp = (clan.totalXp || 0) + gift.coin_price;
-    }
-  }
-
-  if (!localDb.giftLogs) {
-    (localDb as any).giftLogs = [];
-  }
-  (localDb as any).giftLogs.push({
-    id: "glog_" + Date.now(),
-    roomId: room_id || "global",
-    senderId: sender_id,
-    receiverId: receiver_id || null,
-    giftId: gift_id,
-    timestamp: new Date().toISOString()
-  });
-
-  saveDb(localDb);
-  res.json({
-    success: true,
-    message: "تم إرسال الهدية بنجاح",
-    sender_balance: sender.coins,
-    sender_xp: sender.senderXp,
-    vip_level: sender.vipLevel,
-    badges: sender.badges,
-    gift
-  });
-});
-
-// GET /api/leaderboard: Leaderboards for Senders, Receivers, and Clans
+// Leaderboards for Senders, Receivers, and Clans
 app.get("/api/leaderboard", async (req, res) => {
   const fDb = getFirestoreDb();
   if (fDb) {
@@ -1497,7 +887,6 @@ app.get("/api/leaderboard", async (req, res) => {
     }
   }
 
-  // Fallback local leaderboard
   const localDb = getDb();
   const senders = [...localDb.users]
     .sort((a, b) => (b.senderXp || 0) - (a.senderXp || 0))
@@ -1530,7 +919,7 @@ app.get("/api/leaderboard", async (req, res) => {
   res.json({ senders, receivers, clans });
 });
 
-// POST /api/clans/create: Create a new clan for 1000 coins
+// Create clan
 app.post("/api/clans/create", async (req, res) => {
   const { clan_name, clan_logo, owner_id } = req.body;
   if (!clan_name || !owner_id) {
@@ -1546,25 +935,13 @@ app.post("/api/clans/create", async (req, res) => {
       const userRef = fDb.collection("users").doc(owner_id);
       await fDb.runTransaction(async (transaction: any) => {
         const userDoc = await transaction.get(userRef);
-        let balance = 0;
-        let badges = [];
+        let balance = userDoc.exists ? (userDoc.data().coins_balance || 0) : 10000;
+        let badges = userDoc.exists ? (userDoc.data().badges || []) : [];
 
-        if (userDoc.exists) {
-          balance = userDoc.data().coins_balance || 0;
-          badges = userDoc.data().badges || [];
-        } else {
-          // Provision user if they didn't exist (demo convenience)
-          balance = 10000;
-        }
-
-        if (balance < 1000) {
-          throw new Error("Insufficient Balance for Clan creation");
-        }
+        if (balance < 1000) throw new Error("Insufficient Balance for Clan creation");
 
         const updatedBadges = [...badges];
-        if (!updatedBadges.includes("loyal_member")) {
-          updatedBadges.push("loyal_member");
-        }
+        if (!updatedBadges.includes("loyal_member")) updatedBadges.push("loyal_member");
 
         transaction.update(userRef, { 
           coins_balance: balance - 1000, 
@@ -1592,12 +969,9 @@ app.post("/api/clans/create", async (req, res) => {
     }
   }
 
-  // Fallback to Local DB
   const localDb = getDb();
   const owner = localDb.users.find(u => u.id === owner_id);
-  if (!owner) {
-    return res.status(404).json({ error: "المستخدم غير موجود" });
-  }
+  if (!owner) return res.status(404).json({ error: "المستخدم غير موجود" });
 
   if (owner.coins < 1000) {
     return res.status(400).json({ error: "عذراً، رصيدك غير كافي لإنشاء عائلة (تحتاج 1000 كوين)" });
@@ -1606,14 +980,9 @@ app.post("/api/clans/create", async (req, res) => {
   owner.coins -= 1000;
   owner.clanId = clan_id;
   if (!owner.badges) owner.badges = [];
-  if (!owner.badges.includes("loyal_member")) {
-    owner.badges.push("loyal_member");
-  }
+  if (!owner.badges.includes("loyal_member")) owner.badges.push("loyal_member");
 
-  if (!localDb.clans) {
-    localDb.clans = [];
-  }
-
+  if (!localDb.clans) localDb.clans = [];
   localDb.clans.push({
     clanId: clan_id,
     clanName: clan_name,
@@ -1626,12 +995,10 @@ app.post("/api/clans/create", async (req, res) => {
   res.json({ success: true, clan_id, message: "تم إنشاء العائلة بنجاح!" });
 });
 
-// POST /api/clans/join: Join a clan
+// Join clan
 app.post("/api/clans/join", async (req, res) => {
   const { clan_id, user_id } = req.body;
-  if (!clan_id || !user_id) {
-    return res.status(400).json({ error: "معرف العائلة والملقن مطلوبان" });
-  }
+  if (!clan_id || !user_id) return res.status(400).json({ error: "معرف العائلة والملقن مطلوبان" });
 
   const fDb = getFirestoreDb();
   if (fDb) {
@@ -1639,15 +1006,9 @@ app.post("/api/clans/join", async (req, res) => {
       const userRef = fDb.collection("users").doc(user_id);
       await fDb.runTransaction(async (transaction: any) => {
         const userDoc = await transaction.get(userRef);
-        let badges = [];
-        if (userDoc.exists) {
-          badges = userDoc.data().badges || [];
-        }
-
+        let badges = userDoc.exists ? (userDoc.data().badges || []) : [];
         const updatedBadges = [...badges];
-        if (!updatedBadges.includes("loyal_member")) {
-          updatedBadges.push("loyal_member");
-        }
+        if (!updatedBadges.includes("loyal_member")) updatedBadges.push("loyal_member");
 
         transaction.update(userRef, { 
           clan_id: clan_id,
@@ -1660,48 +1021,30 @@ app.post("/api/clans/join", async (req, res) => {
     }
   }
 
-  // Fallback to Local DB
   const localDb = getDb();
   const user = localDb.users.find(u => u.id === user_id);
-  if (!user) {
-    return res.status(404).json({ error: "المستخدم غير موجود" });
-  }
+  if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
 
   user.clanId = clan_id;
   if (!user.badges) user.badges = [];
-  if (!user.badges.includes("loyal_member")) {
-    user.badges.push("loyal_member");
-  }
+  if (!user.badges.includes("loyal_member")) user.badges.push("loyal_member");
 
   saveDb(localDb);
   res.json({ success: true, message: "تم الانضمام للعائلة بنجاح!" });
 });
 
-
-
-// ==================== FOLLOW & PROFILE & PRIVATE MESSAGING ENDPOINTS ====================
-
-import { PrivateMessage } from "./src/types";
-
-// Follow / Unfollow User API
+// Follow/Unfollow
 app.post("/api/users/follow", (req, res) => {
   const { followerId, followingId } = req.body;
-  if (!followerId || !followingId) {
-    return res.status(400).json({ error: "معرف المتابع والمعتمَد مطلوبان" });
-  }
-  if (followerId === followingId) {
-    return res.status(400).json({ error: "لا يمكنك متابعة نفسك!" });
-  }
+  if (!followerId || !followingId) return res.status(400).json({ error: "معرف المتابع والمعتمَد مطلوبان" });
+  if (followerId === followingId) return res.status(400).json({ error: "لا يمكنك متابعة نفسك!" });
 
   const db = getDb();
   const follower = db.users.find(u => u.id === followerId);
   const following = db.users.find(u => u.id === followingId);
 
-  if (!follower || !following) {
-    return res.status(404).json({ error: "المستخدم غير موجود في قاعدة البيانات" });
-  }
+  if (!follower || !following) return res.status(404).json({ error: "المستخدم غير موجود" });
 
-  // Ensure arrays exist
   if (!follower.following) follower.following = [];
   if (!following.followers) following.followers = [];
 
@@ -1709,15 +1052,11 @@ app.post("/api/users/follow", (req, res) => {
   let isFollowing = false;
 
   if (followIndex !== -1) {
-    // Unfollow
     follower.following.splice(followIndex, 1);
     const followerIndex = following.followers.indexOf(followerId);
-    if (followerIndex !== -1) {
-      following.followers.splice(followerIndex, 1);
-    }
+    if (followerIndex !== -1) following.followers.splice(followerIndex, 1);
     isFollowing = false;
   } else {
-    // Follow
     follower.following.push(followingId);
     following.followers.push(followerId);
     isFollowing = true;
@@ -1727,19 +1066,14 @@ app.post("/api/users/follow", (req, res) => {
   res.json({ success: true, isFollowing, follower, following });
 });
 
-// Update Profile API
+// Update Profile Biography
 app.post("/api/users/update-profile", (req, res) => {
   const { id, name, avatar, bio } = req.body;
-  if (!id) {
-    return res.status(400).json({ error: "معرف المستخدم مطلوب" });
-  }
+  if (!id) return res.status(400).json({ error: "معرف المستخدم مطلوب" });
 
   const db = getDb();
   const user = db.users.find(u => u.id === id);
-
-  if (!user) {
-    return res.status(404).json({ error: "المستخدم غير موجود" });
-  }
+  if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
 
   if (name) user.name = name;
   if (avatar) user.avatar = avatar;
@@ -1749,72 +1083,25 @@ app.post("/api/users/update-profile", (req, res) => {
   res.json({ success: true, user });
 });
 
-// Get Private Messages for User
+// Get Private Messages
 app.get("/api/messages/:userId", (req, res) => {
   const { userId } = req.params;
   const db = getDb();
   if (!db.privateMessages) db.privateMessages = [];
-  
-  const userMsgs = db.privateMessages.filter(
-    m => m.senderId === userId || m.receiverId === userId
-  );
+  const userMsgs = db.privateMessages.filter(m => m.senderId === userId || m.receiverId === userId);
   res.json(userMsgs);
-});
-
-// Agora Token Generation
-app.get('/api/agora-token', (req, res) => {
-    const channelName = req.query.channelName as string;
-    const uidStr = req.query.uid as string;
-
-    if (!channelName) {
-        return res.status(400).json({ error: 'channelName is required' });
-    }
-
-    const appId = process.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
-    const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE || "037e1422e2f644dfb7d57a7bc04bd25f";
-    
-    // تحويل الـ UID إلى رقم (لأن Agora RTC تتطلب أرقاماً للتوكن القياسي)
-    const uid = uidStr ? parseInt(uidStr, 10) : Math.floor(Math.random() * 1000000);
-    const role = RtcRole.PUBLISHER; // صلاحية البث والاستماع معاً
-
-    // تحديد وقت صلاحية التوكن (ساعة كاملة = 3600 ثانية)
-    const expirationTimeInSeconds = 3600;
-    const currentTimestamp = Math.floor(Date.now() / 1000);
-    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
-
-    try {
-        // بناء التوكن المشفر ديناميكياً باستخدام شهادة الأمان
-        const token = RtcTokenBuilder.buildTokenWithUid(
-            appId, 
-            appCertificate, 
-            channelName, 
-            uid, 
-            role, 
-            privilegeExpiredTs
-        );
-
-        console.log(`[SERVER] Token generated successfully for channel: ${channelName}, UID: ${uid}`);
-        return res.json({ token, uid });
-    } catch (error) {
-        console.error("[SERVER] Failed to generate Agora Token:", error);
-        return res.status(500).json({ error: 'Internal Server Error during token generation' });
-    }
 });
 
 // Send Private Message
 app.post("/api/messages", (req, res) => {
   const { senderId, receiverId, text, isEncrypted, rawCiphertext, iv } = req.body;
-  if (!senderId || !receiverId || !text) {
-    return res.status(400).json({ error: "المرسل والمستقبل ونص الرسالة مطلوبين" });
-  }
+  if (!senderId || !receiverId || !text) return res.status(400).json({ error: "المرسل والمستقبل ونص الرسالة مطلوبين" });
 
   const db = getDb();
   const sender = db.users.find(u => u.id === senderId);
   const receiver = db.users.find(u => u.id === receiverId);
 
-  if (!sender || !receiver) {
-    return res.status(404).json({ error: "المستخدم المرسل أو المستقبل غير موجود" });
-  }
+  if (!sender || !receiver) return res.status(404).json({ error: "المستخدم غير موجود" });
 
   const newMessage: PrivateMessage = {
     id: `pm_${Date.now()}_${Math.random().toString(36).substring(4)}`,
@@ -1834,14 +1121,9 @@ app.post("/api/messages", (req, res) => {
   db.privateMessages.push(newMessage);
   saveDb(db);
 
-  // Broadcast in real-time to active WebSocket clients if they are connected
-  const wsMessage = {
-    type: "new_private_message",
-    message: newMessage
-  };
-  
+  const wsMessage = { type: "new_private_message", message: newMessage };
   const msgStr = JSON.stringify(wsMessage);
-  // Iterate over all globally connected sockets
+  
   if (wss && wss.clients) {
     wss.clients.forEach((client: any) => {
       if (client.readyState === WebSocket.OPEN && (client.userId === receiverId || client.userId === senderId)) {
@@ -1853,12 +1135,10 @@ app.post("/api/messages", (req, res) => {
   res.json({ success: true, message: newMessage });
 });
 
-// Mark Private Messages as Read
+// Mark messages as read
 app.post("/api/messages/read", (req, res) => {
   const { userId, otherUserId } = req.body;
-  if (!userId || !otherUserId) {
-    return res.status(400).json({ error: "المستخدم والطرف الآخر مطلوبان" });
-  }
+  if (!userId || !otherUserId) return res.status(400).json({ error: "المستخدم والطرف الآخر مطلوبان" });
 
   const db = getDb();
   if (db.privateMessages) {
@@ -1873,25 +1153,46 @@ app.post("/api/messages/read", (req, res) => {
   res.json({ success: true });
 });
 
-// ==================== VITE & STATIC FILES SERVING ====================
+// Agora Token Generator
+app.get('/api/agora-token', (req, res) => {
+    const channelName = req.query.channelName as string;
+    const uidStr = req.query.uid as string;
 
-// Setup Vite / Static Files handling after API routes
+    if (!channelName) return res.status(400).json({ error: 'channelName is required' });
+
+    const appId = process.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
+    const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE || "037e1422e2f644dfb7d57a7bc04bd25f";
+    
+    const uid = uidStr ? parseInt(uidStr, 10) : Math.floor(Math.random() * 1000000);
+    const role = RtcRole.PUBLISHER;
+    const expirationTimeInSeconds = 3600;
+    const currentTimestamp = Math.floor(Date.now() / 1000);
+    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+    try {
+        const token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, channelName, uid, role, privilegeExpiredTs);
+        console.log(`[SERVER] Token generated successfully for channel: ${channelName}, UID: ${uid}`);
+        return res.json({ token, uid });
+    } catch (error) {
+        console.error("[SERVER] Failed to generate Agora Token:", error);
+        return res.status(500).json({ error: 'Internal Server Error during token generation' });
+    }
+});
+
+// ==================== FRONTEND & STATIC SERVING ====================
+
 async function startApp() {
-  // Run the Firestore connection and permission check on boot asynchronously
-  // so we do not block instant server startup and binding to port 3000
   checkFirestoreAccess().catch((err) => {
     console.error("Firestore connection check failed in background:", err);
   });
 
   if (process.env.NODE_ENV !== "production") {
-    // Development mode
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    // Production mode
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
