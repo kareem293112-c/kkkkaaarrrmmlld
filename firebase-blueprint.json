@@ -1,0 +1,129 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "username": { "type": "string" },
+        "avatar_url": { "type": "string" },
+        "coins_balance": { "type": "number" },
+        "vip_level": { "type": "number" },
+        "clan_id": { "type": "string" },
+        "sender_xp": { "type": "number" },
+        "charm_xp": { "type": "number" },
+        "badges": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["user_id", "username"]
+    },
+    "VoiceRoom": {
+      "title": "VoiceRoom",
+      "description": "Audio chat room",
+      "type": "object",
+      "properties": {
+        "room_name": { "type": "string" },
+        "owner_id": { "type": "string" },
+        "is_private": { "type": "boolean" },
+        "room_password": { "type": "string" },
+        "max_seats": { "type": "number" }
+      },
+      "required": ["room_name", "owner_id"]
+    },
+    "MicSeat": {
+      "title": "MicSeat",
+      "description": "Audio room mic seat",
+      "type": "object",
+      "properties": {
+        "seat_number": { "type": "number" },
+        "current_user_id": { "type": "string" },
+        "is_locked": { "type": "boolean" },
+        "is_muted": { "type": "boolean" }
+      },
+      "required": ["seat_number"]
+    },
+    "Gift": {
+      "title": "Gift",
+      "description": "Virtual gift item",
+      "type": "object",
+      "properties": {
+        "gift_id": { "type": "string" },
+        "gift_name": { "type": "string" },
+        "coin_price": { "type": "number" },
+        "animation_url": { "type": "string" }
+      },
+      "required": ["gift_id", "gift_name", "coin_price"]
+    },
+    "GiftLog": {
+      "title": "GiftLog",
+      "description": "Virtual gift sending transaction logs",
+      "type": "object",
+      "properties": {
+        "room_id": { "type": "string" },
+        "sender_id": { "type": "string" },
+        "receiver_id": { "type": "string" },
+        "gift_id": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["room_id", "sender_id", "receiver_id", "gift_id"]
+    },
+    "Clan": {
+      "title": "Clan",
+      "description": "Family or Clan",
+      "type": "object",
+      "properties": {
+        "clan_id": { "type": "string" },
+        "clan_name": { "type": "string" },
+        "clan_logo": { "type": "string" },
+        "owner_id": { "type": "string" },
+        "total_xp": { "type": "number" }
+      },
+      "required": ["clan_id", "clan_name", "owner_id"]
+    },
+    "Badge": {
+      "title": "Badge",
+      "description": "User achievement badges",
+      "type": "object",
+      "properties": {
+        "badge_id": { "type": "string" },
+        "badge_name": { "type": "string" },
+        "badge_icon": { "type": "string" },
+        "unlock_criteria": { "type": "string" }
+      },
+      "required": ["badge_id", "badge_name", "badge_icon"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User documents"
+    },
+    "voice_rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/VoiceRoom" },
+      "description": "Voice room documents"
+    },
+    "voice_rooms/{roomId}/mic_seats/{seatId}": {
+      "schema": { "$ref": "#/entities/MicSeat" },
+      "description": "Mic seat documents per room"
+    },
+    "gifts/{giftId}": {
+      "schema": { "$ref": "#/entities/Gift" },
+      "description": "Gift list configuration"
+    },
+    "gift_logs/{logId}": {
+      "schema": { "$ref": "#/entities/GiftLog" },
+      "description": "Gifting history transactions"
+    },
+    "clans/{clanId}": {
+      "schema": { "$ref": "#/entities/Clan" },
+      "description": "Clan documents"
+    },
+    "badges/{badgeId}": {
+      "schema": { "$ref": "#/entities/Badge" },
+      "description": "Badge achievement list"
+    }
+  }
+}

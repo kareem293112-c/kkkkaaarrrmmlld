@@ -1,0 +1,210 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&family=Tajawal:wght@300;400;500;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Tajawal", "Cairo", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Custom premium scrollbar for code blocks and dashboards */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(124, 58, 237, 0.4);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 58, 237, 0.8);
+}
+
+body {
+  background-color: #03000a;
+  color: #f3f4f6;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* Luxury animation pulses */
+@keyframes goldGlow {
+  0%, 100% { box-shadow: 0 0 5px rgba(234, 179, 8, 0.3); }
+  50% { box-shadow: 0 0 15px rgba(234, 179, 8, 0.7); }
+}
+
+.gold-glow {
+  animation: goldGlow 2s infinite ease-in-out;
+}
+
+/* Premium Shimmer skeleton effect */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, #120c24 25%, #231942 50%, #120c24 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+}
+
+/* Pulsing audio waves indicator */
+@keyframes voicePulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.5);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(168, 85, 247, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
+  }
+}
+
+.animate-voice-pulse {
+  animation: voicePulse 1.8s infinite ease-in-out;
+}
+
+@keyframes greenPulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
+  }
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.animate-green-pulse {
+  animation: greenPulse 1.5s infinite ease-in-out;
+}
+
+/* Radar pulse effects for speaking voice seats */
+@keyframes radarPulse1 {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes radarPulse2 {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes radarPulse3 {
+  0% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+
+.animate-radar-1 {
+  animation: radarPulse1 1.4s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-radar-2 {
+  animation: radarPulse2 1.8s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-radar-3 {
+  animation: radarPulse3 2.2s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Floating bokeh / particles animation */
+@keyframes floatParticle1 {
+  0%, 100% {
+    transform: translateY(0px) translateX(0px);
+    opacity: 0.15;
+  }
+  50% {
+    transform: translateY(-80px) translateX(40px);
+    opacity: 0.45;
+  }
+}
+
+@keyframes floatParticle2 {
+  0%, 100% {
+    transform: translateY(0px) translateX(0px);
+    opacity: 0.1;
+  }
+  50% {
+    transform: translateY(-120px) translateX(-30px);
+    opacity: 0.35;
+  }
+}
+
+.animate-float-particle-1 {
+  animation: floatParticle1 12s ease-in-out infinite;
+}
+
+.animate-float-particle-2 {
+  animation: floatParticle2 16s ease-in-out infinite;
+}
+
+/* Luxurious rotating golden glow for VIP frame */
+@keyframes goldRotate {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.vip-golden-shine {
+  background: linear-gradient(135deg, #d97706, #fbbf24, #ef4444, #f59e0b, #d97706);
+  background-size: 300% 300%;
+  animation: goldRotate 4s ease infinite;
+}
+
+/* Ambient backdrop pulse */
+@keyframes pulseBackdrop {
+  0%, 100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.animate-ambient-pulse {
+  animation: pulseBackdrop 6s ease-in-out infinite;
+}
+
+

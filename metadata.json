@@ -1,0 +1,10 @@
+{
+  "name": "Sada Al-Arab Voice Blueprint",
+  "description": "Comprehensive Flutter architecture, folder structure, Dart blueprints, and an interactive Arabic mobile prototype for a 9-seat group voice chat app with an Agent Dashboard.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

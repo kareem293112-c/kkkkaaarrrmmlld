@@ -1,0 +1,176 @@
+{
+  "users": [
+    {
+      "id": "1001",
+      "name": "أحمد العتيبي",
+      "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
+      "level": 15,
+      "coins": 450,
+      "xp": 2400,
+      "isAgent": true,
+      "bio": "المدير العام ومؤسس صدى العرب ☕ أهلاً بالجميع في ديوانيتنا.",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1,
+      "role": "admin"
+    },
+    {
+      "id": "1002",
+      "name": "سارة القحطاني",
+      "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120",
+      "level": 8,
+      "coins": 1202.5,
+      "xp": 5648,
+      "bio": "شاعرة ومحبة للتراث العربي الأصيل 📜✨ صدى صوتكم هنا.",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1,
+      "role": "user"
+    },
+    {
+      "id": "1003",
+      "name": "ياسر الشمري",
+      "avatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=120",
+      "level": 8,
+      "coins": 75,
+      "xp": 850,
+      "bio": "محب للتعارف والدردشة الطيبة والقهوة السعودية ☕🇸🇦",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1,
+      "role": "user"
+    },
+    {
+      "id": "1004",
+      "name": "خالد الحربي",
+      "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120",
+      "level": 34,
+      "coins": 3500,
+      "xp": 9800,
+      "bio": "وكيل الدعم المعتمد 💎 تواصل معي للاستفسارات الرسمية.",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1,
+      "role": "agent"
+    },
+    {
+      "id": "1005",
+      "name": "ريم الدوسري",
+      "avatar": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=120",
+      "level": 4,
+      "coins": 10,
+      "xp": 150,
+      "bio": "عضوة جديدة ومتحمسة لتكوين صداقات حقيقية في صدى العرب ⭐",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1,
+      "role": "user"
+    },
+    {
+      "id": "1305",
+      "name": "عبدالرحمن الخليجي",
+      "avatar": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
+      "level": 1,
+      "coins": 5,
+      "xp": 60,
+      "bio": "عضو مميز في صدى العرب ☕",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1,
+      "role": "user"
+    },
+    {
+      "id": "KK030Z0nOTd6f4JGcpL0KbwR9Gi2",
+      "name": "ABDULKERIM ĞAREZ",
+      "avatar": "https://lh3.googleusercontent.com/a/ACg8ocJ3ZbacC4Q99J3Tnyh07gQSsrzigmElZJb3xsIi7vWpai-LuDB1ug=s96-c",
+      "level": 1,
+      "coins": 1000,
+      "xp": 0,
+      "role": "user",
+      "bio": "عضو مميز في صدى العرب ☕",
+      "followers": [],
+      "following": [],
+      "senderXp": 0,
+      "charmXp": 0,
+      "badges": [],
+      "vipLevel": 1
+    }
+  ],
+  "rooms": [],
+  "transactions": [
+    {
+      "id": "tx_1",
+      "senderId": "AGENT_9999",
+      "senderName": "الوكيل المعتمد لصدى العرب",
+      "receiverId": "1001",
+      "receiverName": "أحمد العتيبي",
+      "amount": 1500,
+      "timestamp": "2026-07-10T02:31:54.250Z"
+    },
+    {
+      "id": "tx_2",
+      "senderId": "AGENT_9999",
+      "senderName": "الوكيل المعتمد لصدى العرب",
+      "receiverId": "1002",
+      "receiverName": "سارة القحطاني",
+      "amount": 3000,
+      "timestamp": "2026-07-09T23:31:54.250Z"
+    }
+  ],
+  "agentBalance": 250000,
+  "privateMessages": [],
+  "clans": [],
+  "badges": [
+    {
+      "badgeId": "diamond_supporter",
+      "badgeName": "الشاحن الماسي",
+      "badgeIcon": "💎",
+      "unlockCriteria": "إرسال هدايا بقيمة 50,000 كوينز"
+    },
+    {
+      "badgeId": "elite_host",
+      "badgeName": "المضيف النجم",
+      "badgeIcon": "⭐",
+      "unlockCriteria": "تلقي هدايا بقيمة 10,000 كوينز"
+    },
+    {
+      "badgeId": "loyal_member",
+      "badgeName": "عضو القبيلة",
+      "badgeIcon": "🛡️",
+      "unlockCriteria": "الانضمام إلى عائلة نشطة"
+    }
+  ],
+  "agentsHub": [
+    {
+      "agent_id": "1004",
+      "agent_name": "خالد الحربي (الوكيل المعتمد)",
+      "contact_whatsapp": "https://wa.me/966500000000",
+      "is_active": true
+    },
+    {
+      "agent_id": "1001",
+      "agent_name": "أحمد العتيبي (الوكيل الذهبي)",
+      "contact_whatsapp": "https://wa.me/966511111111",
+      "is_active": true
+    }
+  ],
+  "agentTransferLogs": []
+}
