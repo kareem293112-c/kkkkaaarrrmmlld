@@ -54,12 +54,8 @@ import {
   exportPublicKey
 } from './lib/crypto';
 import { AgoraEngineManager } from './services/agora/engine';
-import {
-  GIFTS,
-  INITIAL_GIFT_BALANCE,
-  getXpForNextUserLevel,
-  getXpForNextRoomLevel
-} from './data/mockData';
+import { getXpForNextUserLevel, getXpForNextRoomLevel } from './lib/utils';
+import { GIFTS, INITIAL_GIFT_BALANCE } from './data/gifts';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
 import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
 import { auth } from './lib/firebase';
@@ -456,7 +452,7 @@ export default function App() {
           const url = `${window.location.origin}/api/rooms`;
           console.log("Fetching", url);
           try {
-              const res = await fetch(url);
+              const res = await fetch(url, { cache: 'no-store' });
               if (isCancelled) return;
               
               if (!res.ok) {
@@ -464,14 +460,18 @@ export default function App() {
                   return;
               }
               
-              const text = await res.text();
-              try {
-                  const data = JSON.parse(text);
-                  setRooms(data);
-              } catch (e) {
-                  console.error("Polling rooms failed: Expected JSON but got", text);
-                  return;
-              }
+               const text = await res.text();
+               if (text.includes("Please wait") || text.includes("<!doctype html>")) {
+                   // Server is still booting, ignore and retry next time
+                   return;
+               }
+               try {
+                   const data = JSON.parse(text);
+                   setRooms(data);
+               } catch (e) {
+                   console.error("Polling rooms failed: Expected JSON but got", text);
+                   return;
+               }
           } catch (err) {
               if (isCancelled) return;
               console.error("Polling rooms failed:", err);
@@ -2319,7 +2319,7 @@ export default function App() {
                       <div className="relative">
                         <div className="w-10 h-10 rounded-full border-2 border-[#FFAE42] p-0.5 shadow-sm bg-amber-50">
                           <img
-                            src={currentUser.avatar}
+                            src={currentUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                             alt="avatar"
                             className="w-full h-full rounded-full object-cover"
                           />
@@ -3149,7 +3149,7 @@ export default function App() {
                                     </div>
                                     <div className="relative">
                                       <img
-                                        src={otherUser.avatar}
+                                        src={otherUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                                         alt=""
                                         className="w-10 h-10 rounded-full object-cover border border-purple-500/20"
                                       />
@@ -3179,7 +3179,7 @@ export default function App() {
                             <div className="relative">
                               <div className="w-14 h-14 rounded-full border-2 border-amber-400 p-0.5 shadow-md bg-amber-50/10">
                                 <img
-                                  src={currentUser.avatar}
+                                  src={currentUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                                   className="w-full h-full rounded-full object-cover"
                                 />
                               </div>
@@ -3964,7 +3964,7 @@ export default function App() {
                         {activeRoomUsers.slice(0, 3).map((user, idx) => (
                           <img
                             key={user.id || idx}
-                            src={user.avatar}
+                            src={user.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                             alt={user.name}
                             className="w-5 h-5 rounded-full border border-[#140b2e] object-cover"
                             title={user.name}
@@ -4122,7 +4122,7 @@ export default function App() {
                                 <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-950/80 flex items-center justify-center relative">
                                   {occupant ? (
                                     <img
-                                      src={occupant.avatar}
+                                      src={occupant.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                                       alt="seat occupant"
                                       className="w-full h-full object-cover"
                                     />
@@ -4574,7 +4574,7 @@ export default function App() {
                                   >
                                     <div className="relative">
                                       <img
-                                        src={occupant.avatar}
+                                        src={occupant.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                                         alt={occupant.name}
                                         className="w-6 h-6 rounded-full object-cover border border-purple-500/30"
                                       />
@@ -4734,7 +4734,7 @@ export default function App() {
                                 <span className="text-white font-bold block">{req.name}</span>
                                 <span className="text-[9px] text-slate-400">مستوى {req.level}</span>
                               </div>
-                              <img src={req.avatar} alt="" className="w-8 h-8 rounded-full border border-purple-500/20 object-cover" />
+                              <img src={req.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"} alt="" className="w-8 h-8 rounded-full border border-purple-500/20 object-cover" />
                             </div>
                           </div>
                         ))}
@@ -5358,7 +5358,7 @@ export default function App() {
                         <div className="bg-emerald-950/20 p-2.5 rounded-lg border border-emerald-500/20 flex justify-between items-center animate-fade-in">
                           <div className="flex items-center gap-2">
                             <img
-                              src={transferTargetUser.avatar}
+                              src={transferTargetUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                               alt="recipient avatar"
                               className="w-8 h-8 rounded-full border border-emerald-500/30 object-cover"
                             />
@@ -5483,7 +5483,7 @@ export default function App() {
                         {/* Gold ring for high levels, purple for guest */}
                         <div className={`w-20 h-20 rounded-full p-1 shadow-xl bg-slate-950 ${selectedProfileUser.level >= 10 ? 'bg-gradient-to-tr from-amber-500 via-yellow-300 to-orange-400' : 'bg-gradient-to-tr from-purple-600 to-slate-800'}`}>
                           <img
-                            src={selectedProfileUser.avatar}
+                            src={selectedProfileUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                             alt=""
                             className="w-full h-full rounded-full object-cover border-2 border-[#0c081d]"
                           />
@@ -5693,7 +5693,7 @@ export default function App() {
                           </span>
                         </div>
                         <img
-                          src={activePrivateChatUser.avatar}
+                          src={activePrivateChatUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
                           alt=""
                           className="w-8 h-8 rounded-full object-cover border border-purple-500/20 shadow"
                         />

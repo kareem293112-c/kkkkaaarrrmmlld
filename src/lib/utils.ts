@@ -12,3 +12,11 @@ export const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   }
   return window.fetch(target, init);
 };
+
+export const getXpForNextUserLevel = (level: number) => {
+  return level * 150 + 100;
+};
+
+export const getXpForNextRoomLevel = (level: number) => {
+  return level * 300 + 200;
+};

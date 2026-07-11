@@ -538,13 +538,16 @@ app.post("/api/users", async (req, res) => {
 });
 
 // مصفوفة ديناميكية مشتركة على السيرفر ليراها الجميع
-let globalRooms = [
-    { id: "room_1", name: "مجلس صدى العرب الرئيسي", messages: [] }
+const globalRooms: VoiceRoom[] = [
+    { id: "room_1", name: "مجلس صدى العرب الرئيسي", hostName: "System", hostAvatar: "", isPrivate: false, level: 1, xp: 0, activeUsersCount: 0, seats: [] }
 ];
 
 // مسار جلب الرومات المشتركة
 app.get('/api/rooms', (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     console.log("[SERVER] Received request for /api/rooms");
+    console.log("[SERVER] Request query:", req.query);
+    console.log("[SERVER] Request params:", req.params);
     return res.json(globalRooms);
 });
 

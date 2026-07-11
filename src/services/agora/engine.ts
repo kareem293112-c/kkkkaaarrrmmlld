@@ -151,12 +151,7 @@ export class AgoraEngineManager {
                     // 🛠️ الفلاتر البرمجية المتقدمة لتصفية الصوت:
                     AEC: true,             // تفعيل إلغاء الصدى الصارم (Acoustic Echo Cancellation)
                     AGC: true,             // التحكم الذكي في مستوى الصوت (Auto Gain Control) لمنع تضخيم الوشيش
-                    ANS: true,             // تفعيل حاجب الضوضاء الفائق (Advanced Noise Suppression) لقمع الهوشة
-                    
-                    // 🔒 إعدادات إضافية لمنع المتصفح من العبث بنقاء الصوت الافتراضي
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
+                    ANS: true              // تفعيل حاجب الضوضاء الفائق (Advanced Noise Suppression) لقمع الهوشة
                 });
 
                 // 🎙️ ميزة الـ Audio Gate: منع بث الأصوات الخفيفة جداً (مثل المكيف والأنفاس)
