@@ -1334,7 +1334,6 @@ export default function App() {
           type: 'chat'
         }
       ]);
-    }
   };
 
   const handleSendChatMessage = async () => {
