@@ -72,20 +72,13 @@ import {
   signOut
 } from 'firebase/auth';
 
-// تثبيت الرابط الحقيقي لسيرفرك على ريندر لمنع الـ CORS والـ 404
-const API_BASE_URL = "https://kkkkaaarrrmmlld.onrender.com"; 
-// ربط الـ WebSocket بالسيرفر الحقيقي لتحديث الرومات والرسائل بشكل فوري
-const WEBSOCKET_URL = "wss://kkkkaaarrrmmlld.onrender.com";
+// استخدام الروابط النسبية ليتحدث الفرونت إند مع السيرفر داخلياً بدون وسيط
+const API_BASE_URL = "/api"; 
 
-// Safe shadowed fetch to support dynamic URL redirection for API requests
-const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  let target = input;
-  if (typeof target === 'string' && target.startsWith('/api/')) {
-    // Use relative path to avoid CORS issues when same-origin
-    target = target;
-  }
-  return window.fetch(target, init);
-};
+// ربط الـ WebSocket بالسيرفر الحقيقي لتحديث الرومات والرسائل بشكل فوري
+const WEBSOCKET_URL = window.location.protocol === "https:" 
+    ? `wss://${window.location.host}` 
+    : `ws://${window.location.host}`;
 
 // Interactive React subcomponent to dynamically decrypt and display messages safely
 const EncryptedMessageText = ({ 
@@ -460,8 +453,10 @@ export default function App() {
       let isCancelled = false;
 
       const refreshRooms = async () => {
+          const url = `${window.location.origin}/api/rooms`;
+          console.log("Fetching", url);
           try {
-              const res = await fetch('/api/rooms');
+              const res = await fetch(url);
               if (isCancelled) return;
               
               if (!res.ok) {
@@ -469,15 +464,14 @@ export default function App() {
                   return;
               }
               
-              const ct = res.headers.get('content-type');
-              if (!ct || !ct.includes('application/json')) {
-                  console.error("Polling rooms failed: Expected JSON but got", ct);
+              const text = await res.text();
+              try {
+                  const data = JSON.parse(text);
+                  setRooms(data);
+              } catch (e) {
+                  console.error("Polling rooms failed: Expected JSON but got", text);
                   return;
               }
-
-              const data = await res.json();
-              if (isCancelled) return;
-              setRooms(data);
           } catch (err) {
               if (isCancelled) return;
               console.error("Polling rooms failed:", err);
@@ -810,9 +804,8 @@ export default function App() {
       return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // تحديث ربط الـ WebSocket بالسيرفر الحقيقي
-    const wsUrl = `${protocol}//${window.location.host}`;
+    const wsUrl = WEBSOCKET_URL;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

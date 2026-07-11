@@ -544,6 +544,7 @@ let globalRooms = [
 
 // مسار جلب الرومات المشتركة
 app.get('/api/rooms', (req, res) => {
+    console.log("[SERVER] Received request for /api/rooms");
     return res.json(globalRooms);
 });
 
