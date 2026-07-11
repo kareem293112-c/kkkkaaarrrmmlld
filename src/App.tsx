@@ -59,7 +59,7 @@ import { GIFTS, INITIAL_GIFT_BALANCE } from './data/gifts';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
 import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
 import { auth, db } from './lib/firebase';
-import { collection, onSnapshot, addDoc, query } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, query, updateDoc, doc } from 'firebase/firestore';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -314,7 +314,7 @@ export default function App() {
 
 
 
-  const wsRef = useRef<WebSocket | null>(null);
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -687,175 +687,7 @@ export default function App() {
     currentUserRef.current = currentUser;
   }, [currentUser]);
 
-  // WebSocket lifecycle listener (persistent connection based on currentUser)
-  useEffect(() => {
-    if (!currentUser) {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      return;
-    }
 
-    // تحديث ربط الـ WebSocket بالسيرفر الحقيقي
-    const wsUrl = WEBSOCKET_URL;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('Real-time synchronization connected!');
-      // Register global connection
-      ws.send(JSON.stringify({
-        action: 'register',
-        userId: currentUser.id,
-        userName: currentUser.name
-      }));
-
-      // Join room if already inside one
-      const currentActiveRoom = activeRoomRef.current;
-      if (currentActiveRoom) {
-        ws.send(JSON.stringify({
-          action: 'join',
-          roomId: currentActiveRoom.id,
-          userId: currentUser.id,
-          userName: currentUser.name
-        }));
-      }
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const currentActiveRoom = activeRoomRef.current;
-        const currentU = currentUserRef.current;
-
-        if (data.type === 'seats_changed') {
-          const padded = padSeats(data.seats);
-          setActiveRoom(prev => prev ? { ...prev, seats: padded } : null);
-          if (currentActiveRoom) {
-            setRooms(prev => prev.map(r => r.id === currentActiveRoom.id ? { ...r, seats: padded } : r));
-          }
-        }
-
-        else if (data.type === 'room_details_changed') {
-          setActiveRoom(prev => prev && prev.id === data.roomId ? { 
-            ...prev, 
-            name: data.name, 
-            hostAvatar: data.hostAvatar 
-          } : prev);
-          setRooms(prev => prev.map(r => r.id === data.roomId ? { 
-            ...r, 
-            name: data.name, 
-            hostAvatar: data.hostAvatar 
-          } : r));
-        }
-
-        else if (data.type === 'room_users_changed') {
-          setActiveRoomUsers(data.users || []);
-        }
-
-        else if (data.type === 'new_chat_message') {
-          let extraProps: any = {};
-          if (data.text && data.text.startsWith('🔒__E2EE__:')) {
-            try {
-              const payloadStr = data.text.replace('🔒__E2EE__:', '');
-              const parsed = JSON.parse(payloadStr);
-              extraProps = {
-                isEncrypted: true,
-                rawCiphertext: parsed.ciphertext,
-                iv: parsed.iv
-              };
-            } catch (err) {}
-          }
-          setRoomMessages(prev => [
-            ...prev,
-            {
-              sender: data.senderName,
-              text: data.text,
-              color: currentU && data.senderId === currentU.id ? 'text-amber-400' : 'text-purple-300 font-medium',
-              type: 'chat',
-              ...extraProps
-            }
-          ]);
-        }
-
-        else if (data.type === 'system_message') {
-          setRoomMessages(prev => [
-            ...prev,
-            {
-              sender: 'نظام المجلس',
-              text: data.text,
-              color: 'text-purple-400 font-bold',
-              type: 'system'
-            }
-          ]);
-        }
-
-        else if (data.type === 'gift_received') {
-          spawnFloatingGift(data.gift.icon);
-          const receiverText = data.receiverName ? `إلى [ ${data.receiverName} ]` : 'للمجلس';
-          setRoomMessages(prev => [
-            ...prev,
-            {
-              sender: data.senderName,
-              text: `أرسل هدية فاخرة: [ ${data.gift.arabicName} ${data.gift.icon} ] ${receiverText}! 🌟`,
-              color: 'text-amber-400 font-extrabold animate-pulse',
-              type: 'chat'
-            }
-          ]);
-          fetchDbStates();
-        }
-
-        else if (data.type === 'agent_balance_update') {
-          setAgentBalance(data.agentBalance);
-          setTransactions(data.transactions);
-          if (currentU && currentU.id === data.targetUserId) {
-            setCurrentUser(prev => prev ? { ...prev, coins: data.targetUserCoins } : null);
-          }
-          fetchDbStates();
-        }
-
-        else if (data.type === 'new_private_message') {
-          setPrivateMessages(prev => {
-            if (prev.some(m => m.id === data.message.id)) return prev;
-            return [...prev, data.message];
-          });
-        }
-      } catch (err) {
-        console.error('WebSocket parsing error:', err);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log('Real-time synchronization closed');
-    };
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
-  }, [currentUser?.id]);
-
-  // Synchronize room membership over persistent WebSocket connection
-  useEffect(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !currentUser) return;
-
-    if (activeRoom) {
-      ws.send(JSON.stringify({
-        action: 'join',
-        roomId: activeRoom.id,
-        userId: currentUser.id,
-        userName: currentUser.name
-      }));
-    } else {
-      ws.send(JSON.stringify({
-        action: 'leave'
-      }));
-    }
-  }, [activeRoom?.id, currentUser?.id]);
 
   // Track current user's specific seat status to prevent unnecessary microphone restarts when other users move
   const myCurrentSeat = activeRoom?.seats?.find(s => s.userId === currentUser?.id);
@@ -1388,14 +1220,6 @@ export default function App() {
         setActiveRoom(updatedRoom);
         setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
 
-        // Real-time synchronization broadcast
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            action: 'seats_update',
-            roomId: activeRoom.id,
-            seats: updatedSeats
-          }));
-        }
       }
     }
   };
@@ -1440,13 +1264,7 @@ export default function App() {
     setSelectedSeatIndex(null);
 
     // Real-time synchronization broadcast
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        action: 'seats_update',
-        roomId: activeRoom.id,
-        seats: updatedSeats
-      }));
-    }
+    await updateDoc(doc(db, "rooms", activeRoom.id), { seats: updatedSeats });
   };
 
   // Sending virtual premium gifts
@@ -1469,27 +1287,27 @@ export default function App() {
       }
     }
 
-    // Process via WebSocket to ensure authoritative database deduction and live broadcasting
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        action: 'send_gift',
-        roomId: activeRoom.id,
-        senderId: currentUser.id,
-        receiverId,
-        receiverSeatIndex,
-        gift
-      }));
-    } else {
-      // Local fallback in case websocket is not open/connected (e.g., initial or offline simulation)
-      // Deduct locally and show message
-      const updatedUser = { 
-        ...currentUser, 
-        coins: currentUser.coins - gift.cost,
-        xp: currentUser.xp + gift.xpReward,
-        level: Math.floor(1 + Math.sqrt((currentUser.xp + gift.xpReward) / 100))
-      };
-      setCurrentUser(updatedUser);
-      setUsers(users.map(u => u.id === currentUser.id ? updatedUser : u));
+    // Process via Firestore (TODO: implement message persistence)
+    // Deduct locally and show message
+    const updatedUser = { 
+      ...currentUser, 
+      coins: currentUser.coins - gift.cost,
+      xp: currentUser.xp + gift.xpReward,
+      level: Math.floor(1 + Math.sqrt((currentUser.xp + gift.xpReward) / 100))
+    };
+    setCurrentUser(updatedUser);
+    setUsers(users.map(u => u.id === currentUser.id ? updatedUser : u));
+
+    setRoomMessages(prev => [
+      ...prev,
+      {
+        sender: currentUser.name,
+        text: `أرسل هدية فاخرة: [ ${gift.arabicName} ${gift.icon} ] ! 🌟`,
+        color: 'text-amber-400 font-extrabold animate-pulse',
+        type: 'chat'
+      }
+    ]);
+
 
       let recName = 'المجلس';
       if (receiverId) {
@@ -1552,29 +1370,18 @@ export default function App() {
       }
     }
     
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeRoom) {
-      wsRef.current.send(JSON.stringify({
-        action: 'chat_message',
-        roomId: activeRoom.id,
-        userId: currentUser?.id,
-        userName: currentUser?.name,
-        text: textToSend
-      }));
-      setChatInputValue('');
-    } else {
-      // Local fallback
-      setRoomMessages(prev => [
-        ...prev,
-        {
-          sender: currentUser ? currentUser.name : 'مجهول',
-          text: textToSend,
-          color: 'text-amber-400',
-          type: 'chat',
-          ...extraProps
-        }
-      ]);
-      setChatInputValue('');
-    }
+    // Send message via Firestore (TODO: implement message persistence)
+    setRoomMessages(prev => [
+      ...prev,
+      {
+        sender: currentUser?.name || 'مستخدم',
+        text: textToSend,
+        color: 'text-purple-300 font-medium',
+        type: 'chat',
+        ...extraProps
+      }
+    ]);
+    setChatInputValue('');
   };
 
   // Agent Dashboard logic: User Search
