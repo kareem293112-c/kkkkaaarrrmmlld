@@ -1,3 +1,4 @@
+import cors from 'cors';
 import express from "express";
 import path from "path";
 import http from "http";
@@ -83,6 +84,13 @@ function getFirestoreDb() {
 
 const app = express();
 const PORT = 3000;
+
+// إجبار السيرفر على قبول الطلبات من أي رابط خارجي لتشغيل الرومات للأصدقاء
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Enable JSON body parsing
 app.use(express.json());
@@ -540,18 +548,74 @@ app.get('/api/rooms', (req, res) => {
 });
 
 // مسار إنشاء روم جديدة وحفظها ديناميكياً
-app.post('/api/rooms', (req, res) => {
-    const { roomName } = req.body;
-    if (!roomName) return res.status(400).json({ error: 'Room name is required' });
+app.post('/api/rooms', async (req, res) => {
+    const { roomName, owner_id, isPrivate, password, hostName, hostAvatar } = req.body;
+    if (!roomName) return res.status(400).json({ error: 'اسم المجلس مطلوب' });
+
+    // التأكد من أن المستخدم ليس لديه غرفة نشطة بالفعل في الذاكرة
+    if (owner_id) {
+        const hasExisting = globalRooms.some(r => r.owner_id === owner_id);
+        if (hasExisting) {
+            return res.status(400).json({ success: false, error: 'لديك غرفة بالفعل! لا يمكنك إنشاء أكثر من غرفة واحدة لكل حساب.' });
+        }
+    }
 
     const newRoom = {
         id: `room_${Date.now()}`,
         name: roomName,
+        hostName: hostName || 'مالك المجلس',
+        hostAvatar: hostAvatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120',
+        isPrivate: !!isPrivate,
+        password: password || "",
+        level: 1,
+        xp: 0,
+        activeUsersCount: 0,
+        owner_id: owner_id || null,
+        seats: Array.from({ length: 10 }, (_, i) => ({
+            index: i + 1,
+            userId: null,
+            isLocked: false,
+            isMuted: false
+        })),
         messages: [] // مصفوفة لتخزين رسائل المجلس النصية بشكل مستقل
     };
 
+    // إذا كانت قاعدة بيانات Firestore مفعلة، نحفظها هناك أيضاً لضمان التوافق الكامل
+    const fDb = getFirestoreDb();
+    if (fDb && owner_id) {
+        try {
+            const existingRoom = await fDb.collection("voice_rooms").where("owner_id", "==", owner_id).get();
+            if (!existingRoom.empty) {
+                return res.status(400).json({ success: false, error: 'لديك غرفة بالفعل! لا يمكنك إنشاء أكثر من غرفة واحدة لكل حساب.' });
+            }
+            
+            await fDb.collection("voice_rooms").doc(newRoom.id).set({
+                room_name: roomName,
+                owner_id: owner_id,
+                is_private: !!isPrivate,
+                room_password: password || "",
+                max_seats: 10,
+                host_name: hostName || 'مالك المجلس',
+                host_avatar: hostAvatar || '',
+                created_at: FieldValue.serverTimestamp()
+            });
+
+            // إنشاء المقاعد في الفايرستور
+            for (let i = 1; i <= 10; i++) {
+                await fDb.collection("voice_rooms").doc(newRoom.id).collection("mic_seats").doc(i.toString()).set({
+                    seat_number: i,
+                    current_user_id: null,
+                    is_locked: false,
+                    is_muted: false
+                });
+            }
+        } catch (dbErr) {
+            console.error("[FIRESTORE-ROOM-CREATE] Failed to mirror room creation:", dbErr);
+        }
+    }
+
     globalRooms.push(newRoom);
-    console.log(`[ROOM-SERVER] Room created successfully: ${roomName}`);
+    console.log(`[ROOM-SERVER] Room created successfully: ${roomName} by owner ${owner_id}`);
     return res.json({ success: true, rooms: globalRooms });
 });
 
@@ -915,6 +979,11 @@ app.post("/api/rooms/create", async (req, res) => {
   const fDb = getFirestoreDb();
   if (fDb) {
     try {
+      const existingRoom = await fDb.collection("voice_rooms").where("owner_id", "==", sanitizedOwnerId).get();
+      if (!existingRoom.empty) {
+        return res.status(400).json({ error: "User already has a room" });
+      }
+
       const roomRef = await fDb.collection("voice_rooms").add({
         room_name: sanitizedRoomName,
         owner_id: sanitizedOwnerId,
@@ -1804,8 +1873,11 @@ app.post("/api/messages/read", (req, res) => {
 
 // Setup Vite / Static Files handling after API routes
 async function startApp() {
-  // Run the Firestore connection and permission check on boot
-  await checkFirestoreAccess();
+  // Run the Firestore connection and permission check on boot asynchronously
+  // so we do not block instant server startup and binding to port 3000
+  checkFirestoreAccess().catch((err) => {
+    console.error("Firestore connection check failed in background:", err);
+  });
 
   if (process.env.NODE_ENV !== "production") {
     // Development mode

@@ -72,12 +72,17 @@ import {
   signOut
 } from 'firebase/auth';
 
-// Safe shadowed fetch to support dynamic VITE_API_URL redirection for API requests on static deployments
+// تثبيت الرابط الحقيقي لسيرفرك على ريندر لمنع الـ CORS والـ 404
+const API_BASE_URL = "https://kkkkaaarrrmmlld.onrender.com"; 
+// ربط الـ WebSocket بالسيرفر الحقيقي لتحديث الرومات والرسائل بشكل فوري
+const WEBSOCKET_URL = "wss://kkkkaaarrrmmlld.onrender.com";
+
+// Safe shadowed fetch to support dynamic URL redirection for API requests
 const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   let target = input;
   if (typeof target === 'string' && target.startsWith('/api/')) {
-    const apiBaseUrl = import.meta.env.VITE_API_URL || "https://onrender.com";
-    target = `${apiBaseUrl}${target}`;
+    // Use relative path to avoid CORS issues when same-origin
+    target = target;
   }
   return window.fetch(target, init);
 };
@@ -411,38 +416,81 @@ export default function App() {
           const response = await fetch('/api/rooms', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ roomName: name })
+              body: JSON.stringify({
+                  roomName: name,
+                  owner_id: currentUser?.id,
+                  isPrivate: newRoomIsPrivate,
+                  password: newRoomPassword,
+                  hostName: currentUser?.name,
+                  hostAvatar: currentUser?.avatar
+              })
           });
+          
+          if (!response.ok) {
+              const errorText = await response.text();
+              console.error("POST /api/rooms failed:", response.status, errorText);
+              return { success: false, error: 'فشلت عملية إنشاء الغرفة' };
+          }
+          
           const data = await response.json();
           
           if (data.success) {
               // 1. جلب الرومات المحدثة من السيرفر فوراً
               const res = await fetch('/api/rooms');
-              const updatedRooms = await res.json();
-              setRooms(updatedRooms);
+              if (res.ok) {
+                  const updatedRooms = await res.json();
+                  setRooms(updatedRooms);
+              }
               
               // 2. إغلاق نافذة الإنشاء الرسومية وإفراغ حقل النص
               setIsCreateRoomModalOpen(false); 
               setNewRoomNameInput("");
+              return { success: true };
+          } else {
+              return { success: false, error: data.error || 'فشلت عملية إنشاء الغرفة' };
           }
       } catch (e) {
           console.error("Error synchronizing new room:", e);
+          return { success: false, error: 'حدث خطأ في الاتصال بالسيرفر' };
       }
   };
 
   // تشغيل التحديث التلقائي كل 4 ثوانٍ لضمان ظهور رومات الأصدقاء فوراً
   useEffect(() => {
+      let isCancelled = false;
+
       const refreshRooms = async () => {
           try {
               const res = await fetch('/api/rooms');
+              if (isCancelled) return;
+              
+              if (!res.ok) {
+                  console.error("Polling rooms failed: Server returned", res.status);
+                  return;
+              }
+              
+              const ct = res.headers.get('content-type');
+              if (!ct || !ct.includes('application/json')) {
+                  console.error("Polling rooms failed: Expected JSON but got", ct);
+                  return;
+              }
+
               const data = await res.json();
+              if (isCancelled) return;
               setRooms(data);
           } catch (err) {
+              if (isCancelled) return;
               console.error("Polling rooms failed:", err);
           }
       };
+
       const interval = setInterval(refreshRooms, 4000);
-      return () => clearInterval(interval);
+      refreshRooms(); // Initial call
+      
+      return () => {
+          isCancelled = true;
+          clearInterval(interval);
+      };
   }, []);
 
   // Listen for Firebase auth state changes
@@ -763,22 +811,8 @@ export default function App() {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let wsUrl = `${protocol}//${window.location.host}`;
-    const isAiStudioOrLocal = window.location.hostname.includes('run.app') || 
-                              window.location.hostname.includes('localhost') || 
-                              window.location.hostname.includes('127.0.0.1') ||
-                              window.location.hostname.includes('googleusercontent.com') ||
-                              window.location.hostname.includes('google.com') ||
-                              window.location.hostname.includes('sandbox.google.com');
-    if (!isAiStudioOrLocal && import.meta.env.VITE_API_URL) {
-      try {
-        const backendUrl = new URL(import.meta.env.VITE_API_URL);
-        const wsProtocol = backendUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${wsProtocol}//${backendUrl.host}`;
-      } catch (e) {
-        console.error("Invalid VITE_API_URL for WebSocket:", e);
-      }
-    }
+    // تحديث ربط الـ WebSocket بالسيرفر الحقيقي
+    const wsUrl = `${protocol}//${window.location.host}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -1510,7 +1544,8 @@ export default function App() {
 
     // Audio stream management
     if (seat.userId === currentUser.id && updatedSeats[selectedSeatIndex].userId === null) {
-      stopPublishing(currentUser.id + "_stream");
+      const agoraManager = AgoraEngineManager.getInstance();
+      agoraManager.stopPublishing();
     }
 
     const updatedRoom = { ...activeRoom, seats: updatedSeats };
@@ -3558,7 +3593,7 @@ export default function App() {
 
                                 setNewRoomLoading(true);
                                 setNewRoomError('');
-                                await handleCreateRoom(newRoomNameInput.trim());
+                                const result = await handleCreateRoom(newRoomNameInput.trim()); if (result && !result.success) { setNewRoomError(result.error); }
                                 setNewRoomLoading(false);
                               }}
                             className="bg-[#FFAE42] text-white py-2.5 rounded-xl text-xs font-black transition shadow-sm hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-50"
@@ -3963,7 +3998,8 @@ export default function App() {
                           }
                           const isOnSeat = activeRoom.seats.some(s => s.userId === currentUser.id);
                           if (isOnSeat) {
-                            stopPublishing(currentUser.id + "_stream");
+                            const agoraManager = AgoraEngineManager.getInstance();
+                            agoraManager.stopPublishing();
                           }
                           const cleanedSeats = activeRoom.seats.map(s => s.userId === currentUser.id ? { ...s, userId: null } : s);
                           const updatedRoom = { ...activeRoom, seats: cleanedSeats };
@@ -4324,7 +4360,7 @@ export default function App() {
                                 }));
                               }
                               // Start publishing
-                              startPublishing(currentUser.id + "_stream");
+                              const agoraManager = AgoraEngineManager.getInstance(); agoraManager.startPublishing();
                             } else {
                               alert('عذراً، جميع المقاعد ممتلئة حالياً! يرجى الانتظار لحين مغادرة أحد المتحدثين لكي تتمكن من الصعود والتحدث.');
                             }
@@ -4348,10 +4384,11 @@ export default function App() {
                             }
                             
                             // Handle publishing/stopping based on mute status
+                            const agoraManager = AgoraEngineManager.getInstance();
                             if (nextMuteStatus) {
-                                stopPublishing(currentUser.id + "_stream");
+                                agoraManager.stopPublishing();
                             } else {
-                                startPublishing(currentUser.id + "_stream");
+                                agoraManager.startPublishing();
                             }
                           }
                         }}

@@ -181,9 +181,25 @@ export class AgoraEngineManager {
 
         try {
             if (this.localAudioTrack) {
-                await this.client.unpublish(this.localAudioTrack);
-                this.localAudioTrack.stop();
-                this.localAudioTrack.close();
+                try {
+                    await this.client.unpublish(this.localAudioTrack);
+                } catch (unpubErr) {
+                    console.warn("[AGORA] unpublish failed or track already unpublished:", unpubErr);
+                }
+                try {
+                    if (typeof this.localAudioTrack.stop === 'function') {
+                        this.localAudioTrack.stop();
+                    }
+                } catch (stopErr) {
+                    console.warn("[AGORA] stop track playback failed:", stopErr);
+                }
+                try {
+                    if (typeof this.localAudioTrack.close === 'function') {
+                        this.localAudioTrack.close();
+                    }
+                } catch (closeErr) {
+                    console.warn("[AGORA] close track failed:", closeErr);
+                }
                 this.localAudioTrack = null;
             }
             this.isPublishing = false;
