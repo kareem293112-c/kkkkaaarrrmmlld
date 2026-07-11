@@ -58,7 +58,8 @@ import { getXpForNextUserLevel, getXpForNextRoomLevel } from './lib/utils';
 import { GIFTS, INITIAL_GIFT_BALANCE } from './data/gifts';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
 import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
-import { auth } from './lib/firebase';
+import { auth, db } from './lib/firebase';
+import { collection, onSnapshot, addDoc, query } from 'firebase/firestore';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -68,13 +69,7 @@ import {
   signOut
 } from 'firebase/auth';
 
-// استخدام الروابط النسبية ليتحدث الفرونت إند مع السيرفر داخلياً بدون وسيط
-const API_BASE_URL = "/api"; 
-
-// ربط الـ WebSocket بالسيرفر الحقيقي لتحديث الرومات والرسائل بشكل فوري
-const WEBSOCKET_URL = window.location.protocol === "https:" 
-    ? `wss://${window.location.host}` 
-    : `ws://${window.location.host}`;
+// استخدام Firebase Firestore للبيانات المباشرة بدلاً من الـ API والـ WebSocket القديم
 
 // Interactive React subcomponent to dynamically decrypt and display messages safely
 const EncryptedMessageText = ({ 
@@ -326,165 +321,63 @@ export default function App() {
 
   // Dynamic DB state fetching
   const fetchDbStates = async () => {
-    try {
-      const usersRes = await fetch('/api/users');
-      if (usersRes.ok) {
-        const ct = usersRes.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const usersData = await usersRes.json();
-          setUsers(usersData);
-          if (currentUser) {
-            const matchedUser = usersData.find((u: any) => u.id === currentUser.id);
-            if (matchedUser) {
-              setCurrentUser(matchedUser);
-            }
-          }
-        } else {
-          console.warn('Expected JSON from /api/users but received non-JSON');
-        }
-      }
-
-      const roomsRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/rooms`);
-      if (roomsRes.ok) {
-        const ct = roomsRes.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const roomsData = await roomsRes.json();
-          const sanitizedRooms = (roomsData || []).map((r: any) => ({
-            ...r,
-            seats: padSeats(r.seats)
-          }));
-          setRooms(sanitizedRooms);
-          if (activeRoom) {
-            const matchedRoom = sanitizedRooms.find((r: any) => r.id === activeRoom.id);
-            if (matchedRoom) {
-              setActiveRoom(matchedRoom);
-            }
-          }
-        } else {
-          console.warn('Expected JSON from /api/rooms but received non-JSON');
-        }
-      }
-
-      const txRes = await fetch('/api/transactions');
-      if (txRes.ok) {
-        const ct = txRes.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const txData = await txRes.json();
-          setTransactions(txData);
-        } else {
-          console.warn('Expected JSON from /api/transactions but received non-JSON');
-        }
-      }
-
-      const agentRes = await fetch('/api/agent/balance');
-      if (agentRes.ok) {
-        const ct = agentRes.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const agentData = await agentRes.json();
-          setAgentBalance(agentData.balance);
-        } else {
-          console.warn('Expected JSON from /api/agent/balance but received non-JSON');
-        }
-      }
-
-      const hubRes = await fetch('/api/agents/hub');
-      if (hubRes.ok) {
-        const ct = hubRes.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const hubData = await hubRes.json();
-          setAgentsHub(hubData);
-        }
-      }
-    } catch (e) {
-      console.error('Error fetching database states:', e);
-    }
+    // Firestore synchronization is handled by useEffect hooks.
   };
 
   const handleCreateRoom = async (name: string) => {
-      try {
-          const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/rooms`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  roomName: name,
-                  owner_id: currentUser?.id,
-                  isPrivate: newRoomIsPrivate,
-                  password: newRoomPassword,
-                  hostName: currentUser?.name,
-                  hostAvatar: currentUser?.avatar
-              })
-          });
-          
-          if (!response.ok) {
-              const errorText = await response.text();
-              console.error("POST /api/rooms failed:", response.status, errorText);
-              return { success: false, error: 'فشلت عملية إنشاء الغرفة' };
-          }
-          
-          const data = await response.json();
-          
-          if (data.success) {
-              // 1. جلب الرومات المحدثة من السيرفر فوراً
-              const res = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/rooms`);
-              if (res.ok) {
-                  const updatedRooms = await res.json();
-                  setRooms(updatedRooms);
-              }
-              
-              // 2. إغلاق نافذة الإنشاء الرسومية وإفراغ حقل النص
-              setIsCreateRoomModalOpen(false); 
-              setNewRoomNameInput("");
-              return { success: true };
-          } else {
-              return { success: false, error: data.error || 'فشلت عملية إنشاء الغرفة' };
-          }
-      } catch (e) {
-          console.error("Error synchronizing new room:", e);
-          return { success: false, error: 'حدث خطأ في الاتصال بالسيرفر' };
-      }
+    try {
+      await addDoc(collection(db, "rooms"), {
+        name: name,
+        owner_id: currentUser?.id,
+        isPrivate: newRoomIsPrivate,
+        password: newRoomPassword,
+        hostName: currentUser?.name,
+        hostAvatar: currentUser?.avatar,
+        seats: Array.from({ length: 10 }, (_, i) => ({
+          index: i + 1,
+          userId: null,
+          isLocked: false,
+          isMuted: false
+        })),
+        level: 1,
+        xp: 0,
+        activeUsersCount: 0
+      });
+      setIsCreateRoomModalOpen(false); 
+      setNewRoomNameInput("");
+      return { success: true };
+    } catch (e) {
+      console.error("Error creating room in Firestore:", e);
+      return { success: false, error: 'حدث خطأ في إنشاء الغرفة' };
+    }
   };
 
-  // تشغيل التحديث التلقائي كل 4 ثوانٍ لضمان ظهور رومات الأصدقاء فوراً
+  // Real-time synchronization of rooms using Firestore
   useEffect(() => {
-      let isCancelled = false;
+    const q = query(collection(db, "rooms"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const roomsData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as VoiceRoom[];
+      setRooms(roomsData);
+    });
 
-      const refreshRooms = async () => {
-          const url = `${import.meta.env.VITE_API_BASE_URL}/api/rooms`;
-          console.log("Fetching", url);
-          try {
-              const res = await fetch(url, { cache: 'no-store' });
-              if (isCancelled) return;
-              
-              if (!res.ok) {
-                  console.error("Polling rooms failed: Server returned", res.status);
-                  return;
-              }
-              
-               const text = await res.text();
-               if (text.includes("Please wait") || text.includes("<!doctype html>")) {
-                   // Server is still booting, ignore and retry next time
-                   return;
-               }
-               try {
-                   const data = JSON.parse(text);
-                   setRooms(data);
-               } catch (e) {
-                   console.error("Polling rooms failed: Expected JSON but got", text);
-                   return;
-               }
-          } catch (err) {
-              if (isCancelled) return;
-              console.error("Polling rooms failed:", err);
-          }
-      };
+    return () => unsubscribe();
+  }, []);
 
-      const interval = setInterval(refreshRooms, 4000);
-      refreshRooms(); // Initial call
-      
-      return () => {
-          isCancelled = true;
-          clearInterval(interval);
-      };
+  // Real-time synchronization of users using Firestore
+  useEffect(() => {
+    const q = query(collection(db, "users"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const usersData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as AppUser[];
+      setUsers(usersData);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // Listen for Firebase auth state changes
