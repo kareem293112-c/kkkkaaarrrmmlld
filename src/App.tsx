@@ -326,15 +326,20 @@ export default function App() {
 
   const handleCreateRoom = async (name: string) => {
     try {
-      await addDoc(collection(db, "rooms"), {
+      await addDoc(collection(db, "voice_rooms"), {
         name: name,
+        room_name: name,
         owner_id: currentUser?.id,
         isPrivate: newRoomIsPrivate,
+        is_private: newRoomIsPrivate,
         password: newRoomPassword,
+        room_password: newRoomPassword,
         hostName: currentUser?.name,
+        host_name: currentUser?.name,
         hostAvatar: currentUser?.avatar,
+        host_avatar: currentUser?.avatar || '',
         seats: Array.from({ length: 10 }, (_, i) => ({
-          index: i + 1,
+          index: i,
           userId: null,
           isLocked: false,
           isMuted: false
@@ -354,26 +359,56 @@ export default function App() {
 
   // Real-time synchronization of rooms using Firestore
   useEffect(() => {
-    const q = query(collection(db, "rooms"));
+    const q = query(collection(db, "voice_rooms"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const roomsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as VoiceRoom[];
+      const roomsData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          name: data.name || data.room_name || 'مجلس غير مسمى',
+          hostName: data.hostName || data.host_name || 'مالك المجلس',
+          hostAvatar: data.hostAvatar || data.host_avatar || '',
+          isPrivate: data.isPrivate !== undefined ? data.isPrivate : (data.is_private || false),
+          password: data.password || data.room_password || '',
+          seats: padSeats(data.seats),
+          level: data.level || 1,
+          xp: data.xp || 0,
+          activeUsersCount: data.activeUsersCount || 0,
+          ...data
+        } as VoiceRoom;
+      });
       setRooms(roomsData);
     });
 
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (activeRoom && rooms.length > 0) {
+      const updated = rooms.find(r => r.id === activeRoom.id);
+      if (updated && JSON.stringify(updated.seats) !== JSON.stringify(activeRoom.seats)) {
+        console.log("[SYNC] Syncing activeRoom seats from real-time rooms list");
+        setActiveRoom(updated);
+      }
+    }
+  }, [rooms, activeRoom?.id]);
+
   // Real-time synchronization of users using Firestore
   useEffect(() => {
     const q = query(collection(db, "users"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const usersData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as AppUser[];
+      const usersData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          name: data.name || data.username || 'مستشار صدى',
+          avatar: data.avatar || data.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${doc.id}`,
+          level: data.level || data.vip_level || 1,
+          coins: data.coins !== undefined ? data.coins : (data.coins_balance !== undefined ? data.coins_balance : 0),
+          xp: data.xp || data.sender_xp || 0,
+          ...data
+        };
+      }) as AppUser[];
       setUsers(usersData);
     });
 
@@ -604,6 +639,62 @@ export default function App() {
     } catch (err) {
       console.error('Error saving bio:', err);
     }
+  };
+
+  const handleUpdateAvatar = async (avatarBase64: string) => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch('/api/users/update-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: currentUser.id, avatar: avatarBase64 })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentUser(data.user);
+        localStorage.setItem('currentUser', JSON.stringify(data.user));
+        setUsers(prev => prev.map(u => u.id === currentUser.id ? data.user : u));
+        if (selectedProfileUser?.id === currentUser.id) {
+          setSelectedProfileUser(data.user);
+        }
+      }
+    } catch (err) {
+      console.error('Error updating avatar:', err);
+    }
+  };
+
+  const handleProfileAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('يرجى اختيار ملف صورة صالح.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 300;
+        const MAX_HEIGHT = 300;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+        } else {
+          if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+        }
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+          handleUpdateAvatar(compressedBase64);
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
   };
 
   // End-to-End Cryptography Key Derivation & RSA Lifecycle
@@ -1188,7 +1279,7 @@ export default function App() {
         setSelectedSeatIndex(seatIndex);
       } else {
         // Show occupant's profile modal instead of showing host controls
-        const occupant = users.find(u => u.id === seat.userId);
+        const occupant = users.find(u => u.id === seat.userId) || (currentUser && seat.userId === currentUser.id ? currentUser : null);
         if (occupant) {
           setSelectedProfileUser(occupant);
           setIsProfileModalOpen(true);
@@ -1219,7 +1310,11 @@ export default function App() {
         const updatedRoom = { ...activeRoom, seats: updatedSeats };
         setActiveRoom(updatedRoom);
         setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
-
+        
+        // Persist seat change to Firestore
+        updateDoc(doc(db, "voice_rooms", activeRoom.id), { seats: updatedSeats }).catch(err => {
+          console.error("Failed to sync seat change to Firestore:", err);
+        });
       }
     }
   };
@@ -1264,7 +1359,7 @@ export default function App() {
     setSelectedSeatIndex(null);
 
     // Real-time synchronization broadcast
-    await updateDoc(doc(db, "rooms", activeRoom.id), { seats: updatedSeats });
+    await updateDoc(doc(db, "voice_rooms", activeRoom.id), { seats: updatedSeats });
   };
 
   // Sending virtual premium gifts
@@ -2879,6 +2974,7 @@ export default function App() {
                               <div className="w-14 h-14 rounded-full border-2 border-amber-400 p-0.5 shadow-md bg-amber-50/10">
                                 <img
                                   src={currentUser.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
+                                  referrerPolicy="no-referrer"
                                   className="w-full h-full rounded-full object-cover"
                                 />
                               </div>
@@ -3680,14 +3776,6 @@ export default function App() {
                       {/* Close X Button */}
                       <button
                         onClick={async () => {
-                          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                            wsRef.current.send(JSON.stringify({
-                              action: 'leave',
-                              roomId: activeRoom.id,
-                              userId: currentUser.id,
-                              userName: currentUser.name
-                            }));
-                          }
                           const isOnSeat = activeRoom.seats.some(s => s.userId === currentUser.id);
                           if (isOnSeat) {
                             const agoraManager = AgoraEngineManager.getInstance();
@@ -3696,6 +3784,10 @@ export default function App() {
                           const cleanedSeats = activeRoom.seats.map(s => s.userId === currentUser.id ? { ...s, userId: null } : s);
                           const updatedRoom = { ...activeRoom, seats: cleanedSeats };
                           setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
+                          
+                          // Sync with Firestore before leaving
+                          await updateDoc(doc(db, "voice_rooms", activeRoom.id), { seats: cleanedSeats });
+                          
                           setActiveRoom(null);
                           setIsGiftDrawerOpen(false);
                           setIsAdminDrawerOpen(false);
@@ -3721,7 +3813,7 @@ export default function App() {
                       <div className="grid grid-cols-5 gap-y-8 gap-x-1.5 text-center">
                         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((index) => {
                           const seat = activeRoom.seats[index] || { index, userId: null, isMuted: false, isLocked: false };
-                          const occupant = seat.userId ? users.find(u => u.id === seat.userId) : null;
+                          const occupant = seat.userId ? (users.find(u => u.id === seat.userId) || (currentUser && seat.userId === currentUser.id ? currentUser : null)) : null;
                           const isCurrentUser = occupant && currentUser && occupant.id === currentUser.id;
                           const isSpeaking = !isRoomAudioDeafened && occupant && !seat.isMuted && (
                             isCurrentUser 
@@ -3821,8 +3913,9 @@ export default function App() {
                                 <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-950/80 flex items-center justify-center relative">
                                   {occupant ? (
                                     <img
-                                      src={occupant.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
+                                      src={occupant.avatar && (occupant.avatar.startsWith('http') || occupant.avatar.startsWith('data:')) ? occupant.avatar : `https://api.dicebear.com/7.x/adventurer/svg?seed=${occupant.id}`}
                                       alt="seat occupant"
+                                      referrerPolicy="no-referrer"
                                       className="w-full h-full object-cover"
                                     />
                                   ) : seat.isLocked ? (
@@ -4043,14 +4136,9 @@ export default function App() {
                               setActiveRoom(updatedRoom);
                               setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
 
-                              // Broadcast via WebSocket
-                              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                                wsRef.current.send(JSON.stringify({
-                                  action: 'seats_update',
-                                  roomId: activeRoom.id,
-                                  seats: updatedSeats
-                                }));
-                              }
+                              // Broadcast via Firestore
+                              await updateDoc(doc(db, "voice_rooms", activeRoom.id), { seats: updatedSeats });
+
                               // Start publishing
                               const agoraManager = AgoraEngineManager.getInstance(); agoraManager.startPublishing();
                             } else {
@@ -4066,14 +4154,8 @@ export default function App() {
                             setActiveRoom(updatedRoom);
                             setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
 
-                            // Broadcast via WebSocket
-                            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                              wsRef.current.send(JSON.stringify({
-                                  action: 'seats_update',
-                                  roomId: activeRoom.id,
-                                  seats: updatedSeats
-                              }));
-                            }
+                            // Broadcast via Firestore
+                            await updateDoc(doc(db, "voice_rooms", activeRoom.id), { seats: updatedSeats });
                             
                             // Handle publishing/stopping based on mute status
                             const agoraManager = AgoraEngineManager.getInstance();
@@ -4256,7 +4338,7 @@ export default function App() {
                             {activeRoom.seats
                               .filter((seat) => seat.userId !== null)
                               .map((seat) => {
-                                const occupant = users.find((u) => u.id === seat.userId);
+                                const occupant = users.find((u) => u.id === seat.userId) || (currentUser && seat.userId === currentUser.id ? currentUser : null);
                                 if (!occupant) return null;
                                 const isSelected = selectedRecipientSeatIndex === seat.index;
                                 const isHost = seat.index === 0;

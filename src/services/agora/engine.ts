@@ -99,13 +99,29 @@ export class AgoraEngineManager {
 
             console.log(`[AGORA] Fetching secure token from backend for channel: ${finalRoomID}...`);
             
-            // 1. طلب التوكن المشفر من السيرفر الخلفي بشكل ديناميكي
-            const response = await fetch(`/api/agora-token?channelName=${finalRoomID}&uid=${numericUID}`);
-            if (!response.ok) throw new Error("Backend failed to return a valid token");
+            // 1. طلب التوكن المشفر من السيرفر الخلفي بشكل ديناميكي (مع محاولة الإعادة في حال الفشل)
+            let response;
+            let retries = 3;
+            while (retries > 0) {
+                try {
+                    response = await fetch(`/api/agora-token?channelName=${encodeURIComponent(finalRoomID)}&uid=${numericUID}`);
+                    if (response.ok) break;
+                } catch (e) {
+                    console.warn(`[AGORA] Token fetch attempt failed, retrying... (${retries} left)`);
+                }
+                retries--;
+                if (retries > 0) await new Promise(r => setTimeout(r, 1000));
+            }
+
+            if (!response || !response.ok) throw new Error("Backend failed to return a valid token after retries");
             
             const data = await response.json();
             const secureToken = data.token;
             const finalUID = data.uid;
+
+            if (!secureToken) {
+                throw new Error(`Token missing in response: ${JSON.stringify(data)}`);
+            }
 
             console.log("[AGORA] Secure token received. Joining protected channel...");
             
@@ -114,9 +130,12 @@ export class AgoraEngineManager {
             
             this.isJoined = true; 
             console.log(`[AGORA] Successfully joined secured room: ${finalRoomID}`);
-        } catch (err) {
+        } catch (err: any) {
             this.isJoined = false;
             console.error("[AGORA] Secure Join room failed completely:", err);
+            if (err instanceof TypeError && err.message === 'Failed to fetch') {
+                console.error("[AGORA] This is a network error. Check if the server is running and the API route is accessible.");
+            }
         }
     }
 

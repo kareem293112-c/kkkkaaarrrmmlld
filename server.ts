@@ -4,7 +4,8 @@ import path from "path";
 import http from "http";
 import 'dotenv/config';
 import agoraToken from 'agora-access-token';
-const { RtcTokenBuilder, RtcRole } = agoraToken as any;
+const RtcTokenBuilder = (agoraToken as any).RtcTokenBuilder || (agoraToken as any).default?.RtcTokenBuilder;
+const RtcRole = (agoraToken as any).RtcRole || (agoraToken as any).default?.RtcRole;
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import { getDb, saveDb, initDb } from "./server/db";
@@ -17,7 +18,7 @@ import { GoogleAuth } from "google-auth-library";
 initDb();
 
 // Dynamic PORT assignment for Render or any platform
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Initialize Firebase Admin SDK lazily with fallback
 let firestoreDbInstance: any = null;
@@ -1079,6 +1080,17 @@ app.post("/api/users/update-profile", (req, res) => {
   if (avatar) user.avatar = avatar;
   if (bio !== undefined) user.bio = bio;
 
+  // Sync to Firestore if available
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    const userRef = fDb.collection("users").doc(id);
+    userRef.update({
+      username: name || user.name,
+      avatar_url: avatar || user.avatar,
+      bio: bio !== undefined ? bio : (user.bio || "")
+    }).catch(err => console.error("Firestore sync error in update-profile:", err));
+  }
+
   saveDb(db);
   res.json({ success: true, user });
 });
@@ -1153,17 +1165,34 @@ app.post("/api/messages/read", (req, res) => {
   res.json({ success: true });
 });
 
+// API routes go here FIRST
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
 // Agora Token Generator
 app.get('/api/agora-token', (req, res) => {
+    console.log("[SERVER] Received request for Agora token:", req.query);
     const channelName = req.query.channelName as string;
     const uidStr = req.query.uid as string;
 
-    if (!channelName) return res.status(400).json({ error: 'channelName is required' });
+    if (!channelName) {
+        console.error("[SERVER] channelName is missing in request");
+        return res.status(400).json({ error: 'channelName is required' });
+    }
 
     const appId = process.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
     const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE || "037e1422e2f644dfb7d57a7bc04bd25f";
     
+    console.log(`[SERVER] Using App ID: ${appId.substring(0, 5)}..., App Cert: ${appCertificate ? 'Present' : 'Missing'}`);
+
     const uid = uidStr ? parseInt(uidStr, 10) : Math.floor(Math.random() * 1000000);
+    
+    if (!RtcTokenBuilder || !RtcRole) {
+        console.error("[SERVER] RtcTokenBuilder or RtcRole is not defined. agora-access-token might not be imported correctly.");
+        return res.status(500).json({ error: 'Agora SDK not initialized on server' });
+    }
+
     const role = RtcRole.PUBLISHER;
     const expirationTimeInSeconds = 3600;
     const currentTimestamp = Math.floor(Date.now() / 1000);

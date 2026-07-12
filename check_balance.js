@@ -20,7 +20,7 @@ for (let i = 0; i < lines.length; i++) {
   const closes = (line.match(/}/g) || []).length;
   balance += opens;
   balance -= closes;
-  if (i >= 1330 && i <= 1345) {
+  if (i >= 1270 && i <= 1350) {
     console.log(`Line ${i + 1} (balance ${balance}): ${line}`);
   }
 }

@@ -9,6 +9,7 @@ export const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Res
                               window.location.hostname.includes('sandbox.google.com');
     const apiBaseUrl = isAiStudioOrLocal ? '' : (import.meta.env.VITE_API_URL || '');
     target = `${apiBaseUrl}${target}`;
+    console.log(`[FETCH] Target URL: ${target}, Hostname: ${window.location.hostname}, isAiStudioOrLocal: ${isAiStudioOrLocal}`);
   }
   return window.fetch(target, init);
 };
