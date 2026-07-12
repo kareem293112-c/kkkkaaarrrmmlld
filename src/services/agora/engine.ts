@@ -96,61 +96,63 @@ export class AgoraEngineManager {
             const appId = import.meta.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
             const appCertificate = import.meta.env.VITE_AGORA_APP_CERTIFICATE || "";
             const finalRoomID = roomID.trim() || "default_room";
-            const numericUID = parseInt(userID) || Math.floor(Math.random() * 1000000);
-
+            
             let token = null;
             if (appCertificate) {
                 const role = RtcRole.PUBLISHER;
                 const privilegeExpiredTs = Math.floor(Date.now() / 1000) + 3600;
-                token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, finalRoomID, numericUID, role, privilegeExpiredTs);
+                // Pass userID as string (account) for consistent matching
+                token = RtcTokenBuilder.buildTokenWithAccount(appId, appCertificate, finalRoomID, userID, role, privilegeExpiredTs);
                 console.log(`[AGORA] Local token generated for channel: ${finalRoomID}`);
             } else {
                 console.log(`[AGORA] Joining ${finalRoomID} (Testing Mode - Null Token)...`);
             }
             
-            await client.join(appId, finalRoomID, token, numericUID);
+            await client.join(appId, finalRoomID, token, userID);
             this.isJoined = true;
+            console.log(`[AGORA] Successfully joined room: ${finalRoomID} with UID: ${userID}`);
 
             // إنشاء وبث الميكروفون فوراً لضمان سماع الآخرين للصوت
-            if (!this.localAudioTrack) {
-                this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-                    AEC: true, ANS: true, AGC: true
-                });
-            }
-            await client.publish([this.localAudioTrack]);
-            this.isPublishing = true;
-
-            console.log("[AGORA] Joined & Audio Published Successfully.");
+            await this.startPublishing();
         } catch (err) {
             this.isJoined = false;
-            console.error("[AGORA] Join & Publish failed:", err);
+            console.error("[AGORA] Join failed:", err);
         }
     }
 
     public async startPublishing() {
         if (this.isPublishing || !this.isJoined || !this.client) return;
+        this.isPublishing = true; // Mark as publishing to prevent concurrent calls
         try {
             if (!this.localAudioTrack) {
                 this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({ AEC: true, ANS: true, AGC: true });
             }
-            await this.client.publish([this.localAudioTrack]);
-            this.isPublishing = true;
-            console.log("[AGORA] Audio publishing started.");
+            const localTracks = this.client.localTracks || [];
+            const isAlreadyPublished = this.localAudioTrack && localTracks.some(t => t.getTrackId() === this.localAudioTrack!.getTrackId());
+            if (!isAlreadyPublished) {
+                await this.client.publish([this.localAudioTrack]);
+                console.log("[AGORA] Audio publishing started.");
+            } else {
+                console.log("[AGORA] Track is already published, skipping.");
+            }
         } catch (e) {
+            this.isPublishing = false;
             console.error("[AGORA] Publishing failed:", e);
         }
     }
 
     public async stopPublishing() {
-        if (!this.isPublishing || !this.client) return;
+        if (!this.isPublishing || !this.client || !this.localAudioTrack) return;
+        this.isPublishing = false; // Mark as not publishing immediately
         try {
-            if (this.localAudioTrack) {
+            const localTracks = this.client.localTracks || [];
+            const isAlreadyPublished = localTracks.some(t => t.getTrackId() === this.localAudioTrack!.getTrackId());
+            if (isAlreadyPublished) {
                 await this.client.unpublish([this.localAudioTrack]);
-                this.localAudioTrack.stop();
-                this.localAudioTrack.close();
-                this.localAudioTrack = null;
             }
-            this.isPublishing = false;
+            this.localAudioTrack.stop();
+            this.localAudioTrack.close();
+            this.localAudioTrack = null;
         } catch (e) {
             console.error("[AGORA] Stop failed:", e);
         }
@@ -160,8 +162,10 @@ export class AgoraEngineManager {
         try {
             await this.stopPublishing();
             if (this.client) {
+                this.client.removeAllListeners(); // Clean up all listeners to avoid memory leaks
                 await this.client.leave();
-                this.isJoined = false; // إعادة ضبط الحالة عند المغادرة
+                this.client = null;
+                this.isJoined = false;
                 console.log("[AGORA] Successfully left the audio room.");
             }
         } catch (err) {
