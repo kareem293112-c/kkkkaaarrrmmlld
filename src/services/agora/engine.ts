@@ -87,133 +87,63 @@ export class AgoraEngineManager {
     }
 
     public async joinAudioRoom(roomID: string, userID: string) {
+        if (this.isJoined) return;
         try {
             const client = await this.initEngine();
             if (!client) throw new Error("Agora client not initialized");
 
             const appId = import.meta.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
-            const finalRoomID = roomID && roomID.trim() !== "" ? roomID : "default_room";
-            
-            // توليد UID رقمي متوافق مع السيرفر
-            const numericUID = Math.floor(Math.random() * 1000000);
+            const finalRoomID = roomID.trim() || "default_room";
+            const numericUID = parseInt(userID) || Math.floor(Math.random() * 1000000);
 
-            console.log(`[AGORA] Fetching secure token from backend for channel: ${finalRoomID}...`);
+            console.log(`[AGORA] Joining ${finalRoomID} (Testing Mode - Null Token)...`);
             
-            // 1. محاولة طلب التوكن من السيرفر، وفي حال الفشل نستخدم null للدخول بوضع الاختبار (App ID Only)
-            let secureToken: string | null = null;
-            let finalUID: number = numericUID;
+            // الانضمام بوضع الاختبار (بدون توكن)
+            await client.join(appId, finalRoomID, null, numericUID);
+            this.isJoined = true;
 
-            try {
-                console.log(`[AGORA] Requesting token for: ${finalRoomID}...`);
-                const response = await fetch(`/api/agora-token?channelName=${encodeURIComponent(finalRoomID)}&uid=${numericUID}`);
-                if (response.ok) {
-                    const data = await response.json();
-                    secureToken = data.token;
-                    finalUID = data.uid || numericUID;
-                    console.log("[AGORA] Secure token successfully received from backend.");
-                } else {
-                    console.warn("[AGORA] Backend token generation failed. Falling back to null token for Testing Mode.");
-                }
-            } catch (e) {
-                console.error("[AGORA] Token fetch network error. Falling back to null token for Testing Mode.", e);
+            // إنشاء وبث الميكروفون فوراً لضمان سماع الآخرين للصوت
+            if (!this.localAudioTrack) {
+                this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+                    AEC: true, ANS: true, AGC: true
+                });
             }
-            
-            // 2. الانضمام للقناة: نمرر التوكن إذا وجد، أو نمرر null إذا كان الحساب في وضع الاختبار (App ID Only)
-            console.log(`[AGORA] Final Join - Channel: ${finalRoomID}, UID: ${finalUID}, Token: ${secureToken ? 'ENCRYPTED' : 'NULL (APP ID ONLY MODE)'}`);
-            await client.join(appId, finalRoomID, secureToken, finalUID);
-            
-            this.isJoined = true; 
-            console.log(`[AGORA] Successfully joined secured room: ${finalRoomID}`);
-        } catch (err: any) {
+            await client.publish([this.localAudioTrack]);
+            this.isPublishing = true;
+
+            console.log("[AGORA] Joined & Audio Published Successfully.");
+        } catch (err) {
             this.isJoined = false;
-            console.error("[AGORA] Secure Join room failed completely:", err);
-            if (err instanceof TypeError && err.message === 'Failed to fetch') {
-                console.error("[AGORA] This is a network error. Check if the server is running and the API route is accessible.");
-            }
+            console.error("[AGORA] Join & Publish failed:", err);
         }
     }
 
     public async startPublishing() {
-        if (this.isPublishing) return;
-
-        // الحماية الحاسمة: الانتظار حتى يكتمل الانضمام بنجاح
-        if (!this.isJoined) {
-            console.warn("[AGORA-GUARD] Waiting for join connection to establish...");
-            // محاولة انتظام صغيرة أو تأخير لثوانٍ معدودة لإتاحة الفرصة للسوكت ليفتح
-            await new Promise(resolve => setTimeout(resolve, 800)); 
-            if (!this.isJoined) {
-                console.error("[AGORA-GUARD] Cannot publish, user still hasn't joined the room.");
-                return;
-            }
-        }
-
+        if (this.isPublishing || !this.isJoined || !this.client) return;
         try {
-            const client = await this.initEngine();
-            if (!client) return;
-
             if (!this.localAudioTrack) {
-                console.log("[AGORA-FILTER] Creating Clean Studio Microphone Track with Advanced Acoustic Filters...");
-
-                // تفعيل أقوى فلاتر التصفية وإزالة الهوشة والوشيش برمجياً
-                this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-                    encoderConfig: {
-                        sampleRate: 48000, // جودة استوديو فائقة النقاء
-                        stereo: true,      
-                        bitrate: 128,      
-                    },
-                    // 🛠️ الفلاتر البرمجية المتقدمة لتصفية الصوت:
-                    AEC: true,             // تفعيل إلغاء الصدى الصارم (Acoustic Echo Cancellation)
-                    AGC: true,             // التحكم الذكي في مستوى الصوت (Auto Gain Control) لمنع تضخيم الوشيش
-                    ANS: true              // تفعيل حاجب الضوضاء الفائق (Advanced Noise Suppression) لقمع الهوشة
-                });
-
-                // 🎙️ ميزة الـ Audio Gate: منع بث الأصوات الخفيفة جداً (مثل المكيف والأنفاس)
-                if (this.localAudioTrack) {
-                    // نطلب من المتصفح كتم أي ترددات صوتية تقع تحت عتبة الـ -45 ديسيبل (تصفية وشيش الغرفة)
-                    const mediaStreamTrack = this.localAudioTrack.getMediaStreamTrack();
-                    const constraints = mediaStreamTrack.getConstraints();
-                    console.log("[AGORA-FILTER] Studio Microhpone Constraints applied successfully.");
-                }
+                this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({ AEC: true, ANS: true, AGC: true });
             }
-
-            await client.publish(this.localAudioTrack);
+            await this.client.publish([this.localAudioTrack]);
             this.isPublishing = true;
-            console.log("[AGORA] Microphone published successfully!");
-        } catch (err) {
-            console.error("[AGORA] Failed to publish microphone:", err);
+            console.log("[AGORA] Audio publishing started.");
+        } catch (e) {
+            console.error("[AGORA] Publishing failed:", e);
         }
     }
 
     public async stopPublishing() {
         if (!this.isPublishing || !this.client) return;
-
         try {
             if (this.localAudioTrack) {
-                try {
-                    await this.client.unpublish(this.localAudioTrack);
-                } catch (unpubErr) {
-                    console.warn("[AGORA] unpublish failed or track already unpublished:", unpubErr);
-                }
-                try {
-                    if (typeof this.localAudioTrack.stop === 'function') {
-                        this.localAudioTrack.stop();
-                    }
-                } catch (stopErr) {
-                    console.warn("[AGORA] stop track playback failed:", stopErr);
-                }
-                try {
-                    if (typeof this.localAudioTrack.close === 'function') {
-                        this.localAudioTrack.close();
-                    }
-                } catch (closeErr) {
-                    console.warn("[AGORA] close track failed:", closeErr);
-                }
+                await this.client.unpublish([this.localAudioTrack]);
+                this.localAudioTrack.stop();
+                this.localAudioTrack.close();
                 this.localAudioTrack = null;
             }
             this.isPublishing = false;
-            console.log("[AGORA] Microphone unpublished successfully.");
-        } catch (err) {
-            console.error("[AGORA] Error stopping publish:", err);
+        } catch (e) {
+            console.error("[AGORA] Stop failed:", e);
         }
     }
 
