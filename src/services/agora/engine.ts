@@ -1,5 +1,6 @@
 import AgoraRTC, { IAgoraRTCClient, IMicrophoneAudioTrack } from 'agora-rtc-sdk-ng';
 import { fetch } from '../../lib/utils';
+import { RtcTokenBuilder, RtcRole } from 'agora-access-token';
 
 export class AgoraEngineManager {
     private static instance: AgoraEngineManager | null = null;
@@ -93,13 +94,21 @@ export class AgoraEngineManager {
             if (!client) throw new Error("Agora client not initialized");
 
             const appId = import.meta.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
+            const appCertificate = import.meta.env.VITE_AGORA_APP_CERTIFICATE || "";
             const finalRoomID = roomID.trim() || "default_room";
             const numericUID = parseInt(userID) || Math.floor(Math.random() * 1000000);
 
-            console.log(`[AGORA] Joining ${finalRoomID} (Testing Mode - Null Token)...`);
+            let token = null;
+            if (appCertificate) {
+                const role = RtcRole.PUBLISHER;
+                const privilegeExpiredTs = Math.floor(Date.now() / 1000) + 3600;
+                token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, finalRoomID, numericUID, role, privilegeExpiredTs);
+                console.log(`[AGORA] Local token generated for channel: ${finalRoomID}`);
+            } else {
+                console.log(`[AGORA] Joining ${finalRoomID} (Testing Mode - Null Token)...`);
+            }
             
-            // الانضمام بوضع الاختبار (بدون توكن)
-            await client.join(appId, finalRoomID, null, numericUID);
+            await client.join(appId, finalRoomID, token, numericUID);
             this.isJoined = true;
 
             // إنشاء وبث الميكروفون فوراً لضمان سماع الآخرين للصوت
