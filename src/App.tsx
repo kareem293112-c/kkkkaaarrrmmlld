@@ -59,7 +59,7 @@ import { GIFTS, INITIAL_GIFT_BALANCE } from './data/gifts';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
 import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
 import { auth, db } from './lib/firebase';
-import { collection, onSnapshot, addDoc, query, updateDoc, doc } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, query, updateDoc, doc, setDoc, deleteDoc, increment, serverTimestamp, where } from 'firebase/firestore';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -330,10 +330,10 @@ export default function App() {
         name: name,
         room_name: name,
         owner_id: currentUser?.id,
-        isPrivate: newRoomIsPrivate,
-        is_private: newRoomIsPrivate,
-        password: newRoomPassword,
-        room_password: newRoomPassword,
+        isPrivate: false,
+        is_private: false,
+        password: '',
+        room_password: '',
         hostName: currentUser?.name,
         host_name: currentUser?.name,
         hostAvatar: currentUser?.avatar,
@@ -382,6 +382,35 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Real-time synchronization of participants for the active room
+  useEffect(() => {
+    if (!activeRoom?.id) {
+      setActiveRoomUsers([]);
+      return;
+    }
+
+    console.log("[SYNC] Starting participants listener for room:", activeRoom.id);
+    const participantsRef = collection(db, "voice_rooms", activeRoom.id, "participants");
+    const q = query(participantsRef);
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const participants = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: data.id || doc.id,
+          name: data.name || 'مشارك',
+          avatar: data.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${doc.id}`
+        };
+      });
+      console.log(`[SYNC] Participants updated: ${participants.length} users`);
+      setActiveRoomUsers(participants);
+    }, (error) => {
+      console.error("Error syncing participants:", error);
+    });
+
+    return () => unsubscribe();
+  }, [activeRoom?.id]);
 
   useEffect(() => {
     if (activeRoom && rooms.length > 0) {
@@ -1222,13 +1251,8 @@ export default function App() {
     // Resume/init Agora inside user gesture
     AgoraEngineManager.getInstance().initEngine().catch(() => {});
 
-    if (room.isPrivate) {
-      setSelectedLockedRoom(room);
-      setRoomPasswordInput('');
-      setRoomPasswordError(false);
-    } else {
-      loadActiveRoom(room);
-    }
+    // Always enter directly as requested (make all rooms public)
+    loadActiveRoom(room);
   };
 
   const loadActiveRoom = (room: VoiceRoom) => {
@@ -1238,7 +1262,19 @@ export default function App() {
     };
     setActiveRoom(sanitizedRoom);
     if (currentUser) {
-      setActiveRoomUsers([{ id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar }]);
+      // Add to participants sub-collection
+      const participantRef = doc(db, "voice_rooms", room.id, "participants", currentUser.id);
+      setDoc(participantRef, {
+        id: currentUser.id,
+        name: currentUser.name,
+        avatar: currentUser.avatar,
+        joinedAt: serverTimestamp()
+      }).catch(err => console.error("Error adding participant:", err));
+
+      // Increment activeUsersCount
+      updateDoc(doc(db, "voice_rooms", room.id), {
+        activeUsersCount: increment(1)
+      }).catch(err => console.error("Error incrementing user count:", err));
     }
     setRoomMessages([
       { sender: 'نظام المجلس', text: 'مرحباً بكم في صدى العرب! يرجى الالتزام بالاحترام المتبادل داخل مجالسنا الموقرة.', color: 'text-purple-400 font-bold', type: 'system' }
@@ -2223,11 +2259,6 @@ export default function App() {
                                       alt="host"
                                       className="w-11 h-11 rounded-lg object-cover border border-[#FFAE42]/20 shadow-sm"
                                     />
-                                    {room.isPrivate && (
-                                      <div className="absolute -top-1.5 -right-1.5 bg-red-500 p-0.5 rounded-full border border-white">
-                                        <Lock className="w-2.5 h-2.5 text-white" />
-                                      </div>
-                                    )}
                                   </div>
                                   <div className="text-right">
                                     <h4 className="text-xs font-extrabold text-[#4A3E3D] flex items-center gap-1">
@@ -2238,8 +2269,8 @@ export default function App() {
                                       <span className="bg-amber-50 text-[#FFAE42] text-[8px] px-1.5 py-0.5 rounded font-extrabold border border-[#FFAE42]/10">
                                         Lv.{room.level}
                                       </span>
-                                      <span className="bg-slate-100 text-slate-500 text-[8px] px-1.5 py-0.5 rounded font-bold">
-                                        {room.isPrivate ? 'مجلس خاص 🔒' : 'مجلس عام 🔓'}
+                                      <span className="bg-emerald-50 text-emerald-600 text-[8px] px-1.5 py-0.5 rounded font-bold border border-emerald-100">
+                                        مجلس عام 🔓
                                       </span>
                                     </div>
                                   </div>
@@ -3306,55 +3337,6 @@ export default function App() {
                               className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-right text-xs text-[#4A3E3D] focus:outline-none focus:border-[#FFAE42]"
                             />
                           </div>
-
-                          {/* Room Privacy Choice */}
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-slate-500 font-bold block">نوع الروم</label>
-                            <div className="grid grid-cols-2 gap-2 p-1 bg-[#FAF6EB] rounded-xl border border-[#DCD7C9]/40">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewRoomIsPrivate(false);
-                                  setNewRoomPassword('');
-                                }}
-                                className={`py-1.5 text-[10px] font-black rounded-lg transition-all flex items-center justify-center gap-1 ${
-                                  !newRoomIsPrivate
-                                    ? 'bg-white text-[#FFAE42] shadow-sm border border-[#FFAE42]/10'
-                                    : 'text-slate-500 hover:text-slate-800'
-                                }`}
-                              >
-                                <span>🌍 عام</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setNewRoomIsPrivate(true)}
-                                className={`py-1.5 text-[10px] font-black rounded-lg transition-all flex items-center justify-center gap-1 ${
-                                  newRoomIsPrivate
-                                    ? 'bg-white text-[#FFAE42] shadow-sm border border-[#FFAE42]/10'
-                                    : 'text-slate-500 hover:text-slate-800'
-                                }`}
-                              >
-                                <span>🔒 خاص</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Password Field if private */}
-                          {newRoomIsPrivate && (
-                            <div className="space-y-1 animate-fade-in">
-                              <label className="text-[10px] text-slate-500 font-bold block">الرمز السري للدخول</label>
-                              <input
-                                type="text"
-                                placeholder="مثال: 123"
-                                value={newRoomPassword}
-                                onChange={(e) => {
-                                  setNewRoomPassword(e.target.value);
-                                  setNewRoomError('');
-                                }}
-                                className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-center text-xs text-[#4A3E3D] font-mono focus:outline-none focus:border-[#FFAE42]"
-                              />
-                            </div>
-                          )}
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
@@ -3756,7 +3738,7 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       {/* Overlapping viewer avatars */}
                       <div className="flex -space-x-1.5 space-x-reverse items-center">
-                        {activeRoomUsers.slice(0, 3).map((user, idx) => (
+                        {activeRoomUsers.slice(0, 5).map((user, idx) => (
                           <img
                             key={user.id || idx}
                             src={user.avatar || "https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder"}
@@ -3787,6 +3769,17 @@ export default function App() {
                           
                           // Sync with Firestore before leaving
                           await updateDoc(doc(db, "voice_rooms", activeRoom.id), { seats: cleanedSeats });
+                          
+                          // Remove from participants
+                          if (currentUser) {
+                            const participantRef = doc(db, "voice_rooms", activeRoom.id, "participants", currentUser.id);
+                            deleteDoc(participantRef).catch(err => console.error("Error removing participant:", err));
+                            
+                            // Decrement activeUsersCount
+                            updateDoc(doc(db, "voice_rooms", activeRoom.id), {
+                              activeUsersCount: increment(-1)
+                            }).catch(err => console.error("Error decrementing user count:", err));
+                          }
                           
                           setActiveRoom(null);
                           setIsGiftDrawerOpen(false);

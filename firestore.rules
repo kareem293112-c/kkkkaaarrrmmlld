@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Catch-all deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if isOwner(userId);
+    }
+
+    // Voice Rooms
+    match /voice_rooms/{roomId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      // Allow updates for seats and activeUsersCount
+      allow update: if isSignedIn(); 
+      
+      // Participants sub-collection
+      match /participants/{userId} {
+        allow read: if true;
+        allow write: if isOwner(userId);
+      }
+      
+      // Mic seats sub-collection (if used as sub-collection in some parts)
+      match /mic_seats/{seatId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+    }
+
+    // Clans
+    match /clans/{clanId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Gifts & Logs
+    match /gifts/{giftId} {
+      allow read: if true;
+    }
+    match /gift_logs/{logId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+    }
+    
+    // Messages (if any)
+    match /messages/{msgId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}

@@ -94,6 +94,18 @@
         "unlock_criteria": { "type": "string" }
       },
       "required": ["badge_id", "badge_name", "badge_icon"]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "User currently inside a voice room",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "avatar": { "type": "string" },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name"]
     }
   },
   "firestore": {
@@ -108,6 +120,10 @@
     "voice_rooms/{roomId}/mic_seats/{seatId}": {
       "schema": { "$ref": "#/entities/MicSeat" },
       "description": "Mic seat documents per room"
+    },
+    "voice_rooms/{roomId}/participants/{userId}": {
+      "schema": { "$ref": "#/entities/Participant" },
+      "description": "Participants currently in the room"
     },
     "gifts/{giftId}": {
       "schema": { "$ref": "#/entities/Gift" },
