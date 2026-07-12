@@ -215,10 +215,17 @@ app.get('/api/agora-token', (req, res) => {
     const appId = process.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
     const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE || "037e1422e2f644dfb7d57a7bc04bd25f";
     
+    console.log(`[SERVER-AGORA] Token request for channel: ${channelName}, UID: ${uidStr}, AppID: ${appId.substring(0, 5)}...`);
+
     const uid = uidStr ? parseInt(uidStr, 10) : Math.floor(Math.random() * 1000000);
     
     if (!RtcTokenBuilder || !RtcRole) {
+        console.error("[SERVER-AGORA] Agora SDK components missing!");
         return res.status(500).json({ error: 'Agora SDK not initialized on server' });
+    }
+
+    if (!appCertificate || appCertificate === "YOUR_CERTIFICATE_HERE") {
+        console.warn("[SERVER-AGORA] App Certificate missing or placeholder! Token will likely be invalid if project has certificate enabled.");
     }
 
     const role = RtcRole.PUBLISHER;
@@ -228,8 +235,10 @@ app.get('/api/agora-token', (req, res) => {
 
     try {
         const token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, channelName, uid, role, privilegeExpiredTs);
+        console.log("[SERVER-AGORA] Token generated successfully.");
         return res.json({ token, uid });
     } catch (error) {
+        console.error("[SERVER-AGORA] Token generation failed:", error);
         return res.status(500).json({ error: 'Internal Server Error' });
     }
 });

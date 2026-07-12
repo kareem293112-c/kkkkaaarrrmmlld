@@ -99,33 +99,27 @@ export class AgoraEngineManager {
 
             console.log(`[AGORA] Fetching secure token from backend for channel: ${finalRoomID}...`);
             
-            // 1. طلب التوكن المشفر من السيرفر الخلفي بشكل ديناميكي (مع محاولة الإعادة في حال الفشل)
-            let response;
-            let retries = 3;
-            while (retries > 0) {
-                try {
-                    response = await fetch(`/api/agora-token?channelName=${encodeURIComponent(finalRoomID)}&uid=${numericUID}`);
-                    if (response.ok) break;
-                } catch (e) {
-                    console.warn(`[AGORA] Token fetch attempt failed, retrying... (${retries} left)`);
+            // 1. محاولة طلب التوكن من السيرفر، وفي حال الفشل نستخدم null للدخول بوضع الاختبار (App ID Only)
+            let secureToken: string | null = null;
+            let finalUID: number = numericUID;
+
+            try {
+                console.log(`[AGORA] Requesting token for: ${finalRoomID}...`);
+                const response = await fetch(`/api/agora-token?channelName=${encodeURIComponent(finalRoomID)}&uid=${numericUID}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    secureToken = data.token;
+                    finalUID = data.uid || numericUID;
+                    console.log("[AGORA] Secure token successfully received from backend.");
+                } else {
+                    console.warn("[AGORA] Backend token generation failed. Falling back to null token for Testing Mode.");
                 }
-                retries--;
-                if (retries > 0) await new Promise(r => setTimeout(r, 1000));
+            } catch (e) {
+                console.error("[AGORA] Token fetch network error. Falling back to null token for Testing Mode.", e);
             }
-
-            if (!response || !response.ok) throw new Error("Backend failed to return a valid token after retries");
             
-            const data = await response.json();
-            const secureToken = data.token;
-            const finalUID = data.uid;
-
-            if (!secureToken) {
-                throw new Error(`Token missing in response: ${JSON.stringify(data)}`);
-            }
-
-            console.log("[AGORA] Secure token received. Joining protected channel...");
-            
-            // 2. التمرير المشفر الرسمي لـ Agora باستخدام التوكن والـ UID المستلمين
+            // 2. الانضمام للقناة: نمرر التوكن إذا وجد، أو نمرر null إذا كان الحساب في وضع الاختبار (App ID Only)
+            console.log(`[AGORA] Final Join - Channel: ${finalRoomID}, UID: ${finalUID}, Token: ${secureToken ? 'ENCRYPTED' : 'NULL (APP ID ONLY MODE)'}`);
             await client.join(appId, finalRoomID, secureToken, finalUID);
             
             this.isJoined = true; 

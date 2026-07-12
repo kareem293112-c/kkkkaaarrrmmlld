@@ -420,21 +420,27 @@ export default function App() {
 
   // Listen for Firebase auth state changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let unsubscribeUser: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (unsubscribeUser) {
+        unsubscribeUser();
+        unsubscribeUser = null;
+      }
+
       if (firebaseUser) {
-        // Authenticated. Sync directly with Firestore
-        const defaultName = firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'مستشار صدى';
-        const defaultAvatar = firebaseUser.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`;
+        const userDocRef = doc(db, "users", firebaseUser.uid);
         
-        try {
-          const userDocRef = doc(db, "users", firebaseUser.uid);
-          const userDoc = await getDoc(userDocRef);
-          
-          if (userDoc.exists()) {
-            const userData = userDoc.data() as AppUser;
-            setCurrentUser({ ...userData, id: userDoc.id });
+        // Setup real-time listener for current user document
+        unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const userData = docSnap.data() as AppUser;
+            setCurrentUser({ ...userData, id: docSnap.id });
           } else {
-            // Create new user in Firestore
+            // Create user document if it doesn't exist
+            const defaultName = firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'مستشار صدى';
+            const defaultAvatar = firebaseUser.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`;
+            
             const newUser: AppUser = {
               id: firebaseUser.uid,
               name: defaultName,
@@ -449,32 +455,23 @@ export default function App() {
               badges: [],
               createdAt: new Date().toISOString()
             };
-            await setDoc(userDocRef, newUser);
-            setCurrentUser(newUser);
+            setDoc(userDocRef, newUser).catch(e => console.error("Error creating user doc:", e));
           }
           setCurrentScreen('explore');
-        } catch (err) {
-          console.error("Error syncing authenticated user with Firestore:", err);
-          // Fallback to local state if Firestore fails
-          setCurrentUser({
-            id: firebaseUser.uid,
-            name: defaultName,
-            avatar: defaultAvatar,
-            level: 1,
-            coins: 1000,
-            xp: 0,
-            role: 'user',
-            bio: 'عضو مميز في صدى العرب ☕'
-          } as AppUser);
-          setCurrentScreen('explore');
-        }
+        }, (error) => {
+          console.error("Error listening to current user doc:", error);
+        });
       } else {
         // Logged out
         setCurrentUser(null);
         setCurrentScreen('login');
       }
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeUser) unsubscribeUser();
+    };
   }, []);
 
   // Real-time synchronization of private messages using Firestore
