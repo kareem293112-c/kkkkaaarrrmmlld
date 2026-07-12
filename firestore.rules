@@ -56,9 +56,11 @@ service cloud.firestore {
       allow create: if isSignedIn();
     }
     
-    // Messages (if any)
+    // Messages
     match /messages/{msgId} {
-      allow read, write: if isSignedIn();
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.senderId;
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
     }
   }
 }

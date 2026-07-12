@@ -59,7 +59,7 @@ import { GIFTS, INITIAL_GIFT_BALANCE } from './data/gifts';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
 import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
 import { auth, db } from './lib/firebase';
-import { collection, onSnapshot, addDoc, query, updateDoc, doc, setDoc, deleteDoc, increment, serverTimestamp, where } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, query, updateDoc, doc, setDoc, deleteDoc, runTransaction, increment, serverTimestamp, where, getDoc, orderBy, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -282,27 +282,6 @@ export default function App() {
   const [newClanLogo, setNewClanLogo] = useState('🛡️');
   const [isLeaderboardLoading, setIsLeaderboardLoading] = useState(false);
 
-  const fetchLiveLeaderboard = async () => {
-    setIsLeaderboardLoading(true);
-    try {
-      const res = await fetch('/api/leaderboard');
-      if (res.ok) {
-        const ct = res.headers.get('content-type');
-        if (ct && ct.includes('application/json')) {
-          const data = await res.json();
-          setLiveLeaderboard(data);
-        } else {
-          console.warn('Expected JSON response from /api/leaderboard but received non-JSON');
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch live leaderboard:', err);
-    } finally {
-      setIsLeaderboardLoading(false);
-    }
-  };
-
-
   const addE2eeLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setE2eeAuditLogs(prev => [`[${timestamp}] ${msg}`, ...prev.slice(0, 49)]);
@@ -318,11 +297,6 @@ export default function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
-
-  // Dynamic DB state fetching
-  const fetchDbStates = async () => {
-    // Firestore synchronization is handled by useEffect hooks.
-  };
 
   const handleCreateRoom = async (name: string) => {
     try {
@@ -448,27 +422,20 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        // Authenticated. Sync to backend database
+        // Authenticated. Sync directly with Firestore
         const defaultName = firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'مستشار صدى';
         const defaultAvatar = firebaseUser.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`;
+        
         try {
-          const res = await fetch('/api/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              id: firebaseUser.uid,
-              name: defaultName,
-              avatar: defaultAvatar
-            })
-          });
-          if (res.ok) {
-            const loggedUser = await res.json();
-            setCurrentUser(loggedUser);
-            setCurrentScreen('explore');
-            await fetchDbStates();
+          const userDocRef = doc(db, "users", firebaseUser.uid);
+          const userDoc = await getDoc(userDocRef);
+          
+          if (userDoc.exists()) {
+            const userData = userDoc.data() as AppUser;
+            setCurrentUser({ ...userData, id: userDoc.id });
           } else {
-            console.warn("Backend sync returned non-ok, using fallback user info so user is not stuck:", res.status);
-            const fallbackUser = {
+            // Create new user in Firestore
+            const newUser: AppUser = {
               id: firebaseUser.uid,
               name: defaultName,
               avatar: defaultAvatar,
@@ -476,15 +443,20 @@ export default function App() {
               coins: 1000,
               xp: 0,
               role: 'user',
-              bio: 'عضو مميز في صدى العرب ☕'
+              bio: 'عضو مميز في صدى العرب ☕',
+              followers: [],
+              following: [],
+              badges: [],
+              createdAt: new Date().toISOString()
             };
-            setCurrentUser(fallbackUser);
-            setCurrentScreen('explore');
-            await fetchDbStates();
+            await setDoc(userDocRef, newUser);
+            setCurrentUser(newUser);
           }
+          setCurrentScreen('explore');
         } catch (err) {
-          console.error("Error syncing authenticated user, using fallback user info so user is not stuck:", err);
-          const fallbackUser = {
+          console.error("Error syncing authenticated user with Firestore:", err);
+          // Fallback to local state if Firestore fails
+          setCurrentUser({
             id: firebaseUser.uid,
             name: defaultName,
             avatar: defaultAvatar,
@@ -493,10 +465,8 @@ export default function App() {
             xp: 0,
             role: 'user',
             bio: 'عضو مميز في صدى العرب ☕'
-          };
-          setCurrentUser(fallbackUser);
+          } as AppUser);
           setCurrentScreen('explore');
-          await fetchDbStates();
         }
       } else {
         // Logged out
@@ -507,50 +477,54 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch Private Messages
-  const fetchPrivateMessages = async () => {
-    if (!currentUser) return;
-    try {
-      const res = await fetch(`/api/messages/${currentUser.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setPrivateMessages(data);
-      }
-    } catch (err) {
-      console.error('Error fetching private messages:', err);
-    }
-  };
-
+  // Real-time synchronization of private messages using Firestore
   useEffect(() => {
-    if (currentUser) {
-      fetchPrivateMessages();
+    if (!currentUser?.id) {
+      setPrivateMessages([]);
+      return;
     }
-  }, [currentUser?.id, isPrivateInboxOpen, activePrivateChatUser?.id]);
+
+    console.log("[SYNC] Starting private messages listener for user:", currentUser.id);
+    const messagesRef = collection(db, "messages");
+    // We query for messages where current user is either sender or receiver
+    // Firestore supports 'where' filters, but for OR we might need multiple listeners or a participants array
+    // Here we use a participants array for simplicity in querying
+    const q = query(
+      messagesRef, 
+      where("participants", "array-contains", currentUser.id),
+      orderBy("timestamp", "asc")
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as PrivateMessage[];
+      console.log(`[SYNC] Private messages updated: ${msgs.length} messages`);
+      setPrivateMessages(msgs);
+    }, (error) => {
+      console.error("Error syncing private messages:", error);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.id]);
 
   // Mark messages as read when inbox opens or active chat user changes
   useEffect(() => {
     if (isPrivateInboxOpen && activePrivateChatUser && currentUser) {
-      // Mark as read locally
-      setPrivateMessages(prev => prev.map(msg => {
-        if (msg.senderId === activePrivateChatUser.id && msg.receiverId === currentUser.id) {
-          return { ...msg, isRead: true };
-        }
-        return msg;
-      }));
+      // Find unread messages from other user
+      const unreadMsgs = privateMessages.filter(msg => 
+        msg.senderId === activePrivateChatUser.id && 
+        msg.receiverId === currentUser.id && 
+        !msg.isRead
+      );
 
-      // Call API to mark as read on backend
-      fetch('/api/messages/read', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          userId: currentUser.id,
-          otherUserId: activePrivateChatUser.id
-        })
-      }).catch(err => console.error('Error marking messages as read:', err));
+      unreadMsgs.forEach(msg => {
+        const msgRef = doc(db, "messages", msg.id);
+        updateDoc(msgRef, { isRead: true }).catch(err => console.error("Error marking message as read:", err));
+      });
     }
-  }, [isPrivateInboxOpen, activePrivateChatUser?.id, currentUser?.id]);
+  }, [isPrivateInboxOpen, activePrivateChatUser?.id, currentUser?.id, privateMessages.length]);
 
   // Send Private Message Handler
   const handleSendPrivateMessage = async () => {
@@ -559,42 +533,36 @@ export default function App() {
     const textToSend = newPrivateMessageInput.trim();
     setNewPrivateMessageInput('');
     
-    let isEncrypted = false;
-    let rawCiphertext = '';
-    let iv = '';
-    
-    // Optional: We can encrypt using E2EE symmetric key if E2EE is enabled!
     try {
-      let payload = {
-        senderId: currentUser.id,
-        receiverId: activePrivateChatUser.id,
-        text: textToSend,
-        isEncrypted: false,
-        rawCiphertext: '',
-        iv: ''
-      };
+      let isEncrypted = false;
+      let rawCiphertext = '';
+      let iv = '';
       
       if (isE2EEEnabled && privateKey) {
         const { ciphertext, iv: cryptoIv } = await encryptMessage(textToSend, privateKey);
-        payload.isEncrypted = true;
-        payload.rawCiphertext = ciphertext;
-        payload.iv = cryptoIv;
+        isEncrypted = true;
+        rawCiphertext = ciphertext;
+        iv = cryptoIv;
       }
+
+      const messagePayload = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderAvatar: currentUser.avatar,
+        receiverId: activePrivateChatUser.id,
+        receiverName: activePrivateChatUser.name,
+        text: textToSend,
+        isEncrypted,
+        rawCiphertext,
+        iv,
+        isRead: false,
+        timestamp: new Date().toISOString(),
+        participants: [currentUser.id, activePrivateChatUser.id]
+      };
       
-      const res = await fetch('/api/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-      
-      if (res.ok) {
-        const result = await res.json();
-        setPrivateMessages(prev => [...prev, result.message]);
-      }
+      await addDoc(collection(db, "messages"), messagePayload);
     } catch (err) {
-      console.error('Error sending private message:', err);
+      console.error('Error sending private message to Firestore:', err);
     }
   };
 
@@ -610,34 +578,20 @@ export default function App() {
     }
     
     try {
-      const res = await fetch('/api/users/follow', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          followerId: currentUser.id,
-          followingId: targetUser.id
-        })
-      });
-      
-      if (res.ok) {
-        const data = await res.json();
-        
-        // Update users list and current user
-        setUsers(prev => prev.map(u => {
-          if (u.id === currentUser.id) return data.follower;
-          if (u.id === targetUser.id) return data.following;
-          return u;
-        }));
-        
-        setCurrentUser(data.follower);
-        if (selectedProfileUser?.id === targetUser.id) {
-          setSelectedProfileUser(data.following);
-        }
+      const isFollowing = currentUser.following?.includes(targetUser.id);
+      const userRef = doc(db, "users", currentUser.id);
+      const targetRef = doc(db, "users", targetUser.id);
+
+      if (isFollowing) {
+        await updateDoc(userRef, { following: arrayRemove(targetUser.id) });
+        await updateDoc(targetRef, { followers: arrayRemove(currentUser.id) });
+      } else {
+        await updateDoc(userRef, { following: arrayUnion(targetUser.id) });
+        await updateDoc(targetRef, { followers: arrayUnion(currentUser.id) });
       }
+      // Real-time listeners will handle UI updates for setUsers and setCurrentUser
     } catch (err) {
-      console.error('Error toggling follow:', err);
+      console.error('Error toggling follow in Firestore:', err);
     }
   };
 
@@ -645,50 +599,21 @@ export default function App() {
   const handleSaveBio = async () => {
     if (!currentUser) return;
     try {
-      const res = await fetch('/api/users/update-profile', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          id: currentUser.id,
-          bio: bioEditValue
-        })
-      });
-      
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentUser(data.user);
-        setUsers(prev => prev.map(u => u.id === currentUser.id ? data.user : u));
-        if (selectedProfileUser?.id === currentUser.id) {
-          setSelectedProfileUser(data.user);
-        }
-        setIsEditingBio(false);
-      }
+      const userRef = doc(db, "users", currentUser.id);
+      await updateDoc(userRef, { bio: bioEditValue });
+      setIsEditingBio(false);
     } catch (err) {
-      console.error('Error saving bio:', err);
+      console.error('Error saving bio in Firestore:', err);
     }
   };
 
   const handleUpdateAvatar = async (avatarBase64: string) => {
     if (!currentUser) return;
     try {
-      const res = await fetch('/api/users/update-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: currentUser.id, avatar: avatarBase64 })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentUser(data.user);
-        localStorage.setItem('currentUser', JSON.stringify(data.user));
-        setUsers(prev => prev.map(u => u.id === currentUser.id ? data.user : u));
-        if (selectedProfileUser?.id === currentUser.id) {
-          setSelectedProfileUser(data.user);
-        }
-      }
+      const userRef = doc(db, "users", currentUser.id);
+      await updateDoc(userRef, { avatar: avatarBase64 });
     } catch (err) {
-      console.error('Error updating avatar:', err);
+      console.error('Error updating avatar in Firestore:', err);
     }
   };
 
@@ -1066,6 +991,47 @@ export default function App() {
   const [selectedRecipientSeatIndex, setSelectedRecipientSeatIndex] = useState<number | 'all'>('all');
   const [dashboardTab, setDashboardTab] = useState<'party' | 'games' | 'explore' | 'messages' | 'profile'>('party');
 
+  const fetchLiveLeaderboard = async () => {
+    // Firestore real-time listeners handle this now
+  };
+
+  // Real-time synchronization of leaderboard and clans using Firestore
+  useEffect(() => {
+    if (currentScreen !== 'explore' || dashboardTab !== 'explore') return;
+
+    setIsLeaderboardLoading(true);
+    
+    // Top Senders
+    const sendersQuery = query(collection(db, "users"), orderBy("xp", "desc"), where("xp", ">", 0));
+    const unsubscribeSenders = onSnapshot(sendersQuery, (snapshot) => {
+      const topSenders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setLiveLeaderboard(prev => ({ ...prev, senders: topSenders } as any));
+      setIsLeaderboardLoading(false);
+    });
+
+    // Top Clans
+    const clansQuery = query(collection(db, "clans"), orderBy("totalXp", "desc"));
+    const unsubscribeClans = onSnapshot(clansQuery, (snapshot) => {
+      const topClans = snapshot.docs.map(doc => ({ clan_id: doc.id, ...doc.data() }));
+      setLiveLeaderboard(prev => ({ ...prev, clans: topClans } as any));
+    });
+
+    return () => {
+      unsubscribeSenders();
+      unsubscribeClans();
+    };
+  }, [currentScreen, dashboardTab]);
+
+  // Real-time synchronization for Agents Hub
+  useEffect(() => {
+    const agentsQuery = query(collection(db, "agents_hub"), where("is_active", "==", true));
+    const unsubscribe = onSnapshot(agentsQuery, (snapshot) => {
+      const agents = snapshot.docs.map(doc => ({ agent_id: doc.id, ...doc.data() })) as any;
+      setAgentsHub(agents);
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Fetch live leaderboard and clans when entering the Explore tab
   useEffect(() => {
     if (currentScreen === 'explore' && dashboardTab === 'explore') {
@@ -1217,23 +1183,26 @@ export default function App() {
     const finalId = userId.toString();
 
     try {
-      const response = await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: finalId,
-          name: finalName,
-          coins: 10 // 10 coins welcome bonus
-        })
-      });
-      if (response.ok) {
-        const loggedUser = await response.json();
-        setCurrentUser(loggedUser);
-        setCurrentScreen('explore');
-        await fetchDbStates();
-      }
+      const userRef = doc(db, "users", finalId);
+      const newUser: AppUser = {
+        id: finalId,
+        name: finalName,
+        avatar: `https://api.dicebear.com/7.x/adventurer/svg?seed=${finalId}`,
+        level: 1,
+        coins: 1000,
+        xp: 0,
+        role: 'user',
+        bio: 'عضو جديد في صدى العرب ☕',
+        followers: [],
+        following: [],
+        badges: [],
+        createdAt: new Date().toISOString()
+      };
+      await setDoc(userRef, newUser);
+      setCurrentUser(newUser);
+      setCurrentScreen('explore');
     } catch (e) {
-      console.error('Error during login:', e);
+      console.error('Error during manual signup in Firestore:', e);
     }
 
     // Clean input fields
@@ -1550,32 +1519,50 @@ export default function App() {
       return;
     }
 
-    // Process Transfer on the backend REST API
-    fetch('/api/agents/transfer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        agent_id: currentUser?.id || '1004',
-        receiver_id: transferTargetUser.id,
-        coins_amount: amount
-      })
-    })
-    .then(res => {
-      if (!res.ok) {
-        return res.json().then(data => { throw new Error(data.error || 'فشل التحويل'); });
+    // Process Transfer using Firestore Transaction
+    const performTransfer = async () => {
+      try {
+        const agentRef = doc(db, "users", currentUser?.id || "1004");
+        const receiverRef = doc(db, "users", transferTargetUser.id);
+
+        await runTransaction(db, async (transaction) => {
+          const agentDoc = await transaction.get(agentRef);
+          const receiverDoc = await transaction.get(receiverRef);
+
+          if (!agentDoc.exists()) throw new Error("حساب الوكيل غير موجود");
+          if (!receiverDoc.exists()) throw new Error("حساب المستلم غير موجود");
+
+          const agentBalance = agentDoc.data().coins || 0;
+          const receiverBalance = receiverDoc.data().coins || 0;
+
+          if (agentBalance < amount) throw new Error("رصيد الوكيل غير كافي");
+
+          transaction.update(agentRef, { coins: agentBalance - amount });
+          transaction.update(receiverRef, { coins: receiverBalance + amount });
+
+          // Log transaction
+          const logRef = doc(collection(db, "agent_transfer_logs"));
+          transaction.set(logRef, {
+            id: logRef.id,
+            agent_id: currentUser?.id,
+            agent_name: currentUser?.name,
+            receiver_id: transferTargetUser.id,
+            receiver_name: transferTargetUser.name,
+            coins_amount: amount,
+            timestamp: new Date().toISOString()
+          });
+        });
+
+        setTransferSuccess(true);
+        setTransferAmount('');
+        setTransferPin('');
+        setTransferTargetId('');
+      } catch (err: any) {
+        setTransferErrorMsg(err.message || 'حدث خطأ أثناء التحويل');
       }
-      return res.json();
-    })
-    .then(async () => {
-      setTransferSuccess(true);
-      setTransferAmount('');
-      setTransferPin('');
-      setTransferTargetId('');
-      await fetchDbStates(); // Pull fresh database updates
-    })
-    .catch(err => {
-      setTransferErrorMsg(err.message || 'حدث خطأ غير متوقع أثناء إرسال الكوينز');
-    });
+    };
+
+    performTransfer();
   };
 
   // Folder tree toggle
@@ -2032,19 +2019,18 @@ export default function App() {
                               const firebaseUser = userCredential.user;
                               const defaultAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`;
                               
-                              // Create backend record
-                              const res = await fetch('/api/users', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  id: firebaseUser.uid,
-                                  name: customName.trim(),
-                                  avatar: defaultAvatar
-                                })
+                              // Create Firestore record
+                              await setDoc(doc(db, "users", firebaseUser.uid), {
+                                id: firebaseUser.uid,
+                                uid: firebaseUser.uid,
+                                name: customName.trim(),
+                                avatar: defaultAvatar,
+                                coins: 500,
+                                xp: 0,
+                                senderXp: 0,
+                                badges: [],
+                                createdAt: new Date().toISOString()
                               });
-                              if (!res.ok) {
-                                throw new Error('فشل تسجيل الاسم المستعار في قواعد البيانات');
-                              }
                             } else {
                               // Login User
                               await signInWithEmailAndPassword(auth, email.trim(), password);
@@ -2647,35 +2633,25 @@ export default function App() {
                                   }
 
                                   try {
-                                    const res = await fetch('/api/clans/create', {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({
-                                        clan_name: newClanName,
-                                        clan_logo: newClanLogo,
-                                        owner_id: currentUser.id
-                                      })
+                                    const clanId = `clan_${Date.now()}`;
+                                    await setDoc(doc(db, "clans", clanId), {
+                                      clan_name: newClanName,
+                                      clan_logo: newClanLogo,
+                                      owner_id: currentUser.id,
+                                      totalXp: 0,
+                                      members: [currentUser.id]
                                     });
 
-                                    if (res.ok) {
-                                      const data = await res.json();
-                                      alert(`🎉 مبارك! تم تأسيس عائلة [${newClanName}] بنجاح، وتم منحك وسام العضو الوفي!`);
-                                      setNewClanName('');
-                                      // Deduct client-side coins & update state
-                                      setCurrentUser(prev => prev ? { 
-                                        ...prev, 
-                                        coins: prev.coins - 1000, 
-                                        clanId: data.clan_id,
-                                        badges: [...(prev.badges || []), 'loyal_member']
-                                      } : null);
-                                      fetchLiveLeaderboard();
-                                      fetchDbStates();
-                                    } else {
-                                      const err = await res.json();
-                                      alert(`فشل التأسيس: ${err.error || 'خطأ غير معروف'}`);
-                                    }
+                                    await updateDoc(doc(db, "users", currentUser.id), {
+                                      coins: increment(-1000),
+                                      clanId: clanId,
+                                      badges: arrayUnion('loyal_member')
+                                    });
+
+                                    alert(`🎉 مبارك! تم تأسيس عائلة [${newClanName}] بنجاح، وتم منحك وسام العضو الوفي!`);
+                                    setNewClanName('');
                                   } catch (e: any) {
-                                    alert(`خطأ بالاتصال بالسيرفر: ${e.message}`);
+                                    alert(`خطأ في تأسيس العائلة: ${e.message}`);
                                   }
                                 }}
                                 className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-white font-black text-xs py-2 rounded-xl shadow-md active:scale-95 transition"
@@ -2716,30 +2692,16 @@ export default function App() {
                                                 }
 
                                                 try {
-                                                  const res = await fetch('/api/clans/join', {
-                                                    method: 'POST',
-                                                    headers: { 'Content-Type': 'application/json' },
-                                                    body: JSON.stringify({
-                                                      clan_id: clan.clan_id,
-                                                      user_id: currentUser.id
-                                                    })
+                                                  await updateDoc(doc(db, "clans", clan.clan_id), {
+                                                    members: arrayUnion(currentUser.id)
                                                   });
-
-                                                  if (res.ok) {
-                                                    alert(`🤝 تم انضمامك بنجاح لعائلة [${clan.clan_name}]! وحصلت على لقب العضو الوفي!`);
-                                                    setCurrentUser(prev => prev ? { 
-                                                      ...prev, 
-                                                      clanId: clan.clan_id,
-                                                      badges: [...(prev.badges || []), 'loyal_member']
-                                                    } : null);
-                                                    fetchLiveLeaderboard();
-                                                    fetchDbStates();
-                                                  } else {
-                                                    const err = await res.json();
-                                                    alert(`فشل الانضمام: ${err.error || 'خطأ غير معروف'}`);
-                                                  }
+                                                  await updateDoc(doc(db, "users", currentUser.id), {
+                                                    clanId: clan.clan_id,
+                                                    badges: arrayUnion('loyal_member')
+                                                  });
+                                                  alert(`🤝 تم انضمامك بنجاح لعائلة [${clan.clan_name}]! وحصلت على لقب العضو الوفي!`);
                                                 } catch (e: any) {
-                                                  alert(`خطأ بالسيرفر: ${e.message}`);
+                                                  alert(`خطأ في الانضمام: ${e.message}`);
                                                 }
                                               }}
                                               className="bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black px-3 py-1 rounded-full cursor-pointer transition shadow-sm"
@@ -3098,19 +3060,16 @@ export default function App() {
 
                         {/* Interactive Lottery Wheel mini game banner */}
                         <div 
-                          onClick={() => {
+                          onClick={async () => {
                             const bonus = Math.floor(Math.random() * 20) + 1;
-                            const updated = currentUser.coins + bonus;
-                            fetch('/api/users', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ id: currentUser.id, name: currentUser.name, coins: updated })
-                            })
-                            .then(() => {
-                              setCurrentUser(prev => prev ? { ...prev, coins: updated } : null);
+                            try {
+                              await updateDoc(doc(db, "users", currentUser.id), {
+                                coins: increment(bonus)
+                              });
                               alert(`🎡 تم تدوير عجلة الشحن الفوري! حصلت على +${bonus} كوينز مجانية! 🎉`);
-                              fetchDbStates();
-                            });
+                            } catch (e: any) {
+                              console.error('Lottery error:', e);
+                            }
                           }}
                           className="bg-gradient-to-r from-orange-500 to-amber-500 p-3.5 rounded-2xl text-white text-right shadow-sm hover:scale-[1.01] transition active:scale-95 cursor-pointer relative overflow-hidden"
                         >
@@ -3407,19 +3366,12 @@ export default function App() {
                         <button
                           onClick={async () => {
                             try {
-                              const updatedCoins = currentUser.coins + 50;
-                              const response = await fetch('/api/users', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ id: currentUser.id, name: currentUser.name, coins: updatedCoins })
+                              await updateDoc(doc(db, "users", currentUser.id), {
+                                coins: increment(50)
                               });
-                              if (response.ok) {
-                                setDailyBonusClaimed(true);
-                                setCurrentUser(prev => prev ? { ...prev, coins: updatedCoins } : null);
-                                setIsDailyBonusOpen(false);
-                                alert('🎉 مبروك! تم إضافة 50 كوينز بنجاح لحسابك!');
-                                await fetchDbStates();
-                              }
+                              setDailyBonusClaimed(true);
+                              setIsDailyBonusOpen(false);
+                              alert('🎉 مبروك! تم إضافة 50 كوينز بنجاح لحسابك!');
                             } catch (e) {
                               console.error(e);
                             }
@@ -4791,36 +4743,19 @@ export default function App() {
                             setRoomSettingsError('');
 
                             try {
-                              const response = await fetch('/api/rooms/update', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  room_id: activeRoom.id,
-                                  room_name: roomSettingsName.trim(),
-                                  host_avatar: roomSettingsAvatar.trim()
-                                })
+                              const roomRef = doc(db, "voice_rooms", activeRoom.id);
+                              await updateDoc(roomRef, {
+                                name: roomSettingsName.trim(),
+                                room_name: roomSettingsName.trim(),
+                                hostAvatar: roomSettingsAvatar.trim(),
+                                host_avatar: roomSettingsAvatar.trim()
                               });
 
-                              if (response.ok) {
-                                // Update activeRoom locally
-                                const updatedRoom = { 
-                                  ...activeRoom, 
-                                  name: roomSettingsName.trim(), 
-                                  hostAvatar: roomSettingsAvatar.trim() 
-                                };
-                                setActiveRoom(updatedRoom);
-                                // Also update the list of rooms
-                                setRooms(prev => prev.map(r => r.id === activeRoom.id ? updatedRoom : r));
-                                
-                                setIsRoomSettingsDrawerOpen(false);
-                                alert('🎉 تم تحديث بيانات مجلسك الصوتي بنجاح!');
-                                await fetchDbStates();
-                              } else {
-                                setRoomSettingsError('فشل تحديث الإعدادات، يرجى المحاولة مرة أخرى.');
-                              }
+                              setIsRoomSettingsDrawerOpen(false);
+                              alert('🎉 تم تحديث بيانات مجلسك الصوتي بنجاح!');
                             } catch (err) {
                               console.error(err);
-                              setRoomSettingsError('حدث خطأ في الاتصال بالخادم أثناء حفظ الإعدادات.');
+                              setRoomSettingsError('حدث خطأ في تحديث الإعدادات عبر Firestore.');
                             } finally {
                               setIsUpdatingRoomSettings(false);
                             }

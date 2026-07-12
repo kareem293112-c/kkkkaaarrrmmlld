@@ -20,6 +20,7 @@ export interface AppUser {
   charmXp?: number;
   badges?: string[];
   vipLevel?: number;
+  createdAt?: string;
 }
 
 export interface Clan {
